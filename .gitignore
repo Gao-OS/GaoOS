@@ -23,3 +23,5 @@ Thumbs.db
 # devenv
 .devenv/
 .direnv/
+.devenv.flake.nix
+devenv.lock
