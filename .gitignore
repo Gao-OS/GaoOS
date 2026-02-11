@@ -1,0 +1,25 @@
+# Zig
+zig-cache/
+zig-out/
+.zig-cache/
+
+# QEMU artifacts
+qemu.log
+*.bin
+*.img
+*.elf
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# devenv
+.devenv/
+.direnv/
