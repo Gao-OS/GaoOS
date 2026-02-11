@@ -1,0 +1,279 @@
+// Capability System
+//
+// Every kernel object is accessed exclusively through capabilities.
+// No operation is permitted without presenting a valid capability index.
+//
+// BEAM design constraint: capability creation must be near-zero cost
+// because BEAM spawns millions of lightweight processes, each needing
+// its own capability table.
+//
+// Phase 1: fixed-size array (256 slots per table).
+// Future: hash table → arena-based allocation for millions of entries.
+// The interface is stable — only the backing store changes.
+
+/// Maximum capabilities per table in Phase 1.
+pub const MAX_CAPS = 256;
+
+/// Index into a capability table. Opaque handle given to user space.
+pub const CapIndex = u32;
+
+/// Sentinel value for "no capability".
+pub const CAP_NULL: CapIndex = 0xFFFFFFFF;
+
+/// Types of kernel objects that capabilities can reference.
+pub const CapabilityType = enum(u8) {
+    frame, // Physical memory frame
+    aspace, // Address space (page table root)
+    thread, // Schedulable thread
+    ipc_endpoint, // IPC message queue
+    irq, // Hardware interrupt
+    device, // MMIO device region
+};
+
+/// Access rights bitmask. Derived capabilities can only reduce these.
+pub const Rights = packed struct {
+    read: bool = false,
+    write: bool = false,
+    grant: bool = false, // Can delegate (send via IPC)
+    revoke: bool = false, // Can invalidate derived capabilities
+    _padding: u4 = 0,
+
+    pub const NONE = Rights{};
+    pub const READ_ONLY = Rights{ .read = true };
+    pub const READ_WRITE = Rights{ .read = true, .write = true };
+    pub const ALL = Rights{ .read = true, .write = true, .grant = true, .revoke = true };
+
+    /// True if `self` is a subset of `other` (every right in self is also in other).
+    pub fn isSubsetOf(self: Rights, other: Rights) bool {
+        if (self.read and !other.read) return false;
+        if (self.write and !other.write) return false;
+        if (self.grant and !other.grant) return false;
+        if (self.revoke and !other.revoke) return false;
+        return true;
+    }
+
+    /// Bitwise AND: intersection of two rights sets.
+    pub fn intersect(self: Rights, other: Rights) Rights {
+        return .{
+            .read = self.read and other.read,
+            .write = self.write and other.write,
+            .grant = self.grant and other.grant,
+            .revoke = self.revoke and other.revoke,
+        };
+    }
+
+    pub fn eql(self: Rights, other: Rights) bool {
+        return self.read == other.read and
+            self.write == other.write and
+            self.grant == other.grant and
+            self.revoke == other.revoke;
+    }
+};
+
+/// A capability: unforgeable reference to a kernel object with rights.
+pub const Capability = struct {
+    cap_type: CapabilityType,
+    object: usize, // Pointer-sized handle to the kernel object
+    rights: Rights,
+    generation: u32, // For revocation: matches table slot generation
+
+    pub const INVALID = Capability{
+        .cap_type = .frame,
+        .object = 0,
+        .rights = Rights.NONE,
+        .generation = 0,
+    };
+};
+
+/// Per-address-space capability storage.
+/// Phase 1: fixed array. Interface designed for future scaling.
+pub const CapabilityTable = struct {
+    slots: [MAX_CAPS]Slot = [_]Slot{Slot{}} ** MAX_CAPS,
+    count: u32 = 0,
+
+    const Slot = struct {
+        cap: Capability = Capability.INVALID,
+        valid: bool = false,
+        generation: u32 = 0, // Incremented on delete; prevents use-after-free
+    };
+
+    /// Create a new capability in the table.
+    /// Returns the index, or error if table is full.
+    pub fn create(
+        self: *CapabilityTable,
+        cap_type: CapabilityType,
+        object: usize,
+        rights: Rights,
+    ) error{TableFull}!CapIndex {
+        // Find first empty slot
+        for (&self.slots, 0..) |*slot, i| {
+            if (!slot.valid) {
+                slot.generation +%= 1;
+                slot.cap = .{
+                    .cap_type = cap_type,
+                    .object = object,
+                    .rights = rights,
+                    .generation = slot.generation,
+                };
+                slot.valid = true;
+                self.count += 1;
+                return @intCast(i);
+            }
+        }
+        return error.TableFull;
+    }
+
+    /// Look up a capability by index.
+    /// Returns null if index is invalid or slot is empty.
+    pub fn lookup(self: *const CapabilityTable, index: CapIndex) ?Capability {
+        if (index >= MAX_CAPS) return null;
+        const slot = &self.slots[index];
+        if (!slot.valid) return null;
+        return slot.cap;
+    }
+
+    /// Delete a capability, immediately invalidating it.
+    /// The generation counter prevents stale indices from resolving.
+    pub fn delete(self: *CapabilityTable, index: CapIndex) void {
+        if (index >= MAX_CAPS) return;
+        const slot = &self.slots[index];
+        if (!slot.valid) return;
+        slot.valid = false;
+        slot.cap = Capability.INVALID;
+        self.count -= 1;
+    }
+
+    /// Derive a new capability from an existing one with reduced rights.
+    /// The new rights must be a subset of the source rights (attenuation).
+    /// Returns the new capability's index, or an error.
+    pub fn derive(
+        self: *CapabilityTable,
+        src_index: CapIndex,
+        new_rights: Rights,
+    ) error{ InvalidCapability, RightsEscalation, TableFull }!CapIndex {
+        // Look up source
+        const src = self.lookup(src_index) orelse return error.InvalidCapability;
+
+        // Attenuation check: new rights must be subset of source rights
+        if (!new_rights.isSubsetOf(src.rights)) return error.RightsEscalation;
+
+        // Create derived capability pointing to same object
+        return self.create(src.cap_type, src.object, new_rights) catch |err| switch (err) {
+            error.TableFull => error.TableFull,
+        };
+    }
+
+    /// Check if a capability at the given index has the required rights.
+    /// This is the fundamental access check — called on every kernel operation.
+    pub fn check(self: *const CapabilityTable, index: CapIndex, required: Rights) bool {
+        const cap = self.lookup(index) orelse return false;
+        return required.isSubsetOf(cap.rights);
+    }
+};
+
+// ─── Tests (run on host via `zig test`) ──────────────────────────────
+
+const testing = @import("std").testing;
+
+test "create and lookup capability" {
+    var table = CapabilityTable{};
+
+    const idx = try table.create(.frame, 0x1000, Rights.READ_WRITE);
+    const cap = table.lookup(idx).?;
+
+    try testing.expectEqual(CapabilityType.frame, cap.cap_type);
+    try testing.expectEqual(@as(usize, 0x1000), cap.object);
+    try testing.expect(cap.rights.read);
+    try testing.expect(cap.rights.write);
+    try testing.expect(!cap.rights.grant);
+}
+
+test "derive with reduced rights (attenuation)" {
+    var table = CapabilityTable{};
+
+    const parent = try table.create(.frame, 0x2000, Rights.ALL);
+    const child = try table.derive(parent, Rights.READ_ONLY);
+
+    const child_cap = table.lookup(child).?;
+    try testing.expect(child_cap.rights.read);
+    try testing.expect(!child_cap.rights.write);
+    try testing.expect(!child_cap.rights.grant);
+    try testing.expect(!child_cap.rights.revoke);
+
+    // Same object
+    try testing.expectEqual(@as(usize, 0x2000), child_cap.object);
+}
+
+test "derive rejects expanded rights" {
+    var table = CapabilityTable{};
+
+    const parent = try table.create(.frame, 0x3000, Rights.READ_ONLY);
+    const result = table.derive(parent, Rights.READ_WRITE);
+
+    try testing.expectError(error.RightsEscalation, result);
+}
+
+test "delete invalidates capability" {
+    var table = CapabilityTable{};
+
+    const idx = try table.create(.ipc_endpoint, 0x4000, Rights.ALL);
+    try testing.expect(table.lookup(idx) != null);
+
+    table.delete(idx);
+    try testing.expect(table.lookup(idx) == null);
+}
+
+test "deleted slot can be reused" {
+    var table = CapabilityTable{};
+
+    const idx1 = try table.create(.frame, 0x5000, Rights.ALL);
+    table.delete(idx1);
+
+    const idx2 = try table.create(.thread, 0x6000, Rights.READ_ONLY);
+    // Should reuse the same slot
+    try testing.expectEqual(idx1, idx2);
+
+    // But the capability is different
+    const cap = table.lookup(idx2).?;
+    try testing.expectEqual(CapabilityType.thread, cap.cap_type);
+    try testing.expectEqual(@as(usize, 0x6000), cap.object);
+}
+
+test "check verifies required rights" {
+    var table = CapabilityTable{};
+
+    const idx = try table.create(.device, 0x7000, Rights.READ_ONLY);
+
+    try testing.expect(table.check(idx, Rights.READ_ONLY));
+    try testing.expect(!table.check(idx, Rights.READ_WRITE));
+    try testing.expect(!table.check(idx, Rights.ALL));
+}
+
+test "lookup invalid index returns null" {
+    var table = CapabilityTable{};
+
+    try testing.expect(table.lookup(0) == null);
+    try testing.expect(table.lookup(255) == null);
+    try testing.expect(table.lookup(CAP_NULL) == null);
+}
+
+test "table full returns error" {
+    var table = CapabilityTable{};
+
+    // Fill all slots
+    for (0..MAX_CAPS) |i| {
+        _ = try table.create(.frame, i, Rights.ALL);
+    }
+
+    // Next create should fail
+    const result = table.create(.frame, 0, Rights.ALL);
+    try testing.expectError(error.TableFull, result);
+}
+
+test "rights intersection" {
+    const rw = Rights.READ_WRITE;
+    const ro = Rights.READ_ONLY;
+    const result = rw.intersect(ro);
+    try testing.expect(result.read);
+    try testing.expect(!result.write);
+}

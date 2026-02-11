@@ -22,6 +22,7 @@ pub fn build(b: *std.Build) void {
 
     // Kernel core modules
     const mmu = b.createModule(.{ .root_source_file = b.path("kernel/src/mmu.zig"), .target = opts.target, .optimize = opts.optimize });
+    const cap = b.createModule(.{ .root_source_file = b.path("kernel/src/cap.zig"), .target = opts.target, .optimize = opts.optimize });
 
     // Kernel executable
     const kernel = b.addExecutable(.{
@@ -35,6 +36,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "exception", .module = exception },
                 .{ .name = "arch_mmu", .module = arch_mmu },
                 .{ .name = "mmu", .module = mmu },
+                .{ .name = "cap", .module = cap },
             },
         }),
     });
@@ -56,4 +58,15 @@ pub fn build(b: *std.Build) void {
     run_cmd.addArgs(&.{ "-serial", "stdio", "-display", "none", "-no-reboot" });
     run_cmd.step.dependOn(b.getInstallStep());
     run_step.dependOn(&run_cmd.step);
+
+    // Host-target unit tests (cap, mmu data structures, etc.)
+    const test_step = b.step("test", "Run kernel unit tests on host");
+
+    const cap_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("kernel/src/cap.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(cap_tests).step);
 }
