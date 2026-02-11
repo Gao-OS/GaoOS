@@ -23,6 +23,7 @@ pub fn build(b: *std.Build) void {
     // Kernel core modules
     const mmu = b.createModule(.{ .root_source_file = b.path("kernel/src/mmu.zig"), .target = opts.target, .optimize = opts.optimize });
     const cap = b.createModule(.{ .root_source_file = b.path("kernel/src/cap.zig"), .target = opts.target, .optimize = opts.optimize });
+    const ipc = b.createModule(.{ .root_source_file = b.path("kernel/src/ipc.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{.{ .name = "cap", .module = cap }} });
 
     // Kernel executable
     const kernel = b.addExecutable(.{
@@ -37,6 +38,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "arch_mmu", .module = arch_mmu },
                 .{ .name = "mmu", .module = mmu },
                 .{ .name = "cap", .module = cap },
+                .{ .name = "ipc", .module = ipc },
             },
         }),
     });
@@ -69,4 +71,14 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(cap_tests).step);
+
+    const host_cap = b.createModule(.{ .root_source_file = b.path("kernel/src/cap.zig"), .target = b.graph.host });
+    const ipc_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("kernel/src/ipc.zig"),
+            .target = b.graph.host,
+            .imports = &.{.{ .name = "cap", .module = host_cap }},
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(ipc_tests).step);
 }
