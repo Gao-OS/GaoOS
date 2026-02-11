@@ -20,12 +20,13 @@ pub fn build(b: *std.Build) void {
     const gpio = b.createModule(.{ .root_source_file = b.path("platform/raspi/gpio.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{.{ .name = "mmio", .module = mmio }} });
     const uart = b.createModule(.{ .root_source_file = b.path("platform/raspi/uart.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "mmio", .module = mmio }, .{ .name = "gpio", .module = gpio } } });
 
-    // Kernel arch modules
-    const exception = b.createModule(.{ .root_source_file = b.path("kernel/arch/aarch64/exception.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{.{ .name = "uart", .module = uart }} });
+    // Kernel modules (ordered by dependency)
     const timer = b.createModule(.{ .root_source_file = b.path("kernel/arch/aarch64/timer.zig"), .target = opts.target, .optimize = opts.optimize });
     const cap = b.createModule(.{ .root_source_file = b.path("kernel/src/cap.zig"), .target = opts.target, .optimize = opts.optimize });
     const ipc = b.createModule(.{ .root_source_file = b.path("kernel/src/ipc.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{.{ .name = "cap", .module = cap }} });
     const sched = b.createModule(.{ .root_source_file = b.path("kernel/src/sched.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "cap", .module = cap }, .{ .name = "ipc", .module = ipc } } });
+    const syscall = b.createModule(.{ .root_source_file = b.path("kernel/src/syscall.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "sched", .module = sched }, .{ .name = "cap", .module = cap }, .{ .name = "uart", .module = uart } } });
+    const exception = b.createModule(.{ .root_source_file = b.path("kernel/arch/aarch64/exception.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "uart", .module = uart }, .{ .name = "syscall", .module = syscall }, .{ .name = "sched", .module = sched } } });
 
     // Kernel executable
     const kernel = b.addExecutable(.{
@@ -49,6 +50,7 @@ pub fn build(b: *std.Build) void {
     kernel.addAssemblyFile(b.path("kernel/arch/aarch64/boot.S"));
     kernel.addAssemblyFile(b.path("kernel/arch/aarch64/vectors.S"));
     kernel.addAssemblyFile(b.path("kernel/arch/aarch64/context_switch.S"));
+    kernel.addAssemblyFile(b.path("kernel/arch/aarch64/user_entry.S"));
 
     // Output raw binary for QEMU
     const raw = kernel.addObjCopy(.{ .format = .bin });

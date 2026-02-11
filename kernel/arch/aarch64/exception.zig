@@ -5,6 +5,8 @@
 // Future phases will route exceptions to user-space fault handlers.
 
 const uart = @import("uart");
+const syscall = @import("syscall");
+const sched = @import("sched");
 
 const ExceptionSource = enum(u8) {
     // Current EL, SP_EL0
@@ -100,9 +102,27 @@ export fn exception_handler(type_id: u64, frame: [*]u64) callconv(.{ .aarch64_aa
         // Unknown IRQ — fall through to diagnostic handler
     }
 
+    // Read syndrome register early for fast-path checks
     const esr = asm ("mrs %[ret], esr_el1"
         : [ret] "=r" (-> u64),
     );
+    const ec: u6 = @truncate(esr >> 26);
+
+    // Fast path: SVC from lower EL (user-space syscall)
+    if (ec == 0x15 and type_id == 8) {
+        if (sched.global.has_current) {
+            syscall.dispatch(sched.global.current, frame);
+        }
+        return;
+    }
+
+    // Fast path: SVC from current EL (kernel self-test)
+    if (ec == 0x15) {
+        return;
+    }
+
+    // ─── Diagnostic dump for unexpected exceptions ─────────────────
+
     const elr = asm ("mrs %[ret], elr_el1"
         : [ret] "=r" (-> u64),
     );
@@ -112,7 +132,6 @@ export fn exception_handler(type_id: u64, frame: [*]u64) callconv(.{ .aarch64_aa
 
     uart.puts("\n!!! EXCEPTION !!!\n");
 
-    // Exception source
     uart.puts("  Type: ");
     if (type_id < 16) {
         uart.puts(source_names[@intCast(type_id)]);
@@ -121,57 +140,37 @@ export fn exception_handler(type_id: u64, frame: [*]u64) callconv(.{ .aarch64_aa
     }
     uart.puts("\n");
 
-    // ESR_EL1: syndrome register (tells us what happened)
-    const ec: u6 = @truncate(esr >> 26);
     uart.puts("  ESR_EL1:  0x");
     putHex64(esr);
     uart.puts(" (");
     uart.puts(esrClassName(ec));
     uart.puts(")\n");
 
-    // ELR_EL1: return address (where it happened)
     uart.puts("  ELR_EL1:  0x");
     putHex64(elr);
     uart.puts("\n");
 
-    // FAR_EL1: fault address (for data/instruction aborts)
     uart.puts("  FAR_EL1:  0x");
     putHex64(far);
     uart.puts("\n");
 
-    // Frame layout (from vectors.S _exception_common):
-    //   [sp+0]:   x2,  x3
-    //   [sp+16]:  x4,  x5
-    //   ...
-    //   [sp+208]: x28, x29
-    //   [sp+224]: x30, ELR_EL1
-    //   [sp+240]: SPSR_EL1
-    //   [sp+248]: x0,  x1  (relocated from initial push)
+    // Frame layout: x0 at frame[31], x1 at frame[32], x2 at frame[0], etc.
     uart.puts("  x0-x3:    ");
-    // x0 is at frame[31] (offset 248/8), x1 at frame[32]
     uart.puts("0x");
     putHex64(frame[31]);
     uart.putc(' ');
     uart.puts("0x");
     putHex64(frame[32]);
     uart.putc(' ');
-    // x2 at frame[0], x3 at frame[1]
     uart.puts("0x");
     putHex64(frame[0]);
     uart.putc(' ');
     uart.puts("0x");
     putHex64(frame[1]);
     uart.puts("\n");
-    // x30 (LR) at frame[28] (offset 224/8)
     uart.puts("  x30 (LR): 0x");
     putHex64(frame[28]);
     uart.puts("\n");
-
-    // SVC is a deliberate syscall — return to caller (ELR already points past SVC)
-    if (ec == 0x15) {
-        uart.puts("  (returning from SVC)\n");
-        return;
-    }
 
     // All other exceptions are fatal for now — halt
     uart.puts("\n  HALTED\n");
