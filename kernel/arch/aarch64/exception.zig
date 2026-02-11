@@ -69,10 +69,37 @@ fn esrClassName(ec: u6) []const u8 {
     };
 }
 
+/// Timer IRQ callback. Set by the scheduler at init time.
+var timer_handler: ?*const fn () void = null;
+
+/// Register a callback for timer IRQ handling.
+pub fn setTimerHandler(handler: *const fn () void) void {
+    timer_handler = handler;
+}
+
 /// Called from vectors.S for all 16 exception vectors.
 /// type_id: 0-15 identifying which vector fired
 /// frame: pointer to saved register context on stack
 export fn exception_handler(type_id: u64, frame: [*]u64) callconv(.{ .aarch64_aapcs = .{} }) void {
+    // Fast path: IRQ from current EL (type 5) or lower EL (type 9)
+    // Check if it's a timer IRQ and handle without full diagnostic dump
+    if (type_id == 5 or type_id == 9) {
+        // Read Core 0 interrupt source to identify which IRQ
+        // BCM2837 local interrupt controller: 0x40000060 = Core 0 IRQ Source
+        const core0_irq_source: *volatile u32 = @ptrFromInt(0x40000060);
+        const source = core0_irq_source.*;
+
+        // Bit 3 = virtual timer IRQ (CNTVIRQ)
+        if (source & (1 << 3) != 0) {
+            if (timer_handler) |handler| {
+                handler();
+                return;
+            }
+        }
+
+        // Unknown IRQ — fall through to diagnostic handler
+    }
+
     const esr = asm ("mrs %[ret], esr_el1"
         : [ret] "=r" (-> u64),
     );

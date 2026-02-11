@@ -7,6 +7,10 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .aarch64,
         .os_tag = .freestanding,
         .abi = .none,
+        // Disable NEON/FP to avoid SIMD alignment faults in kernel code.
+        // AArch64 SIMD stores require 16-byte alignment, but struct fields
+        // and stack locals may only be 8-byte aligned.
+        .cpu_features_sub = std.Target.aarch64.featureSet(&.{ .neon, .fp_armv8 }),
     });
 
     const opts = .{ .target = target, .optimize = optimize };
@@ -18,12 +22,10 @@ pub fn build(b: *std.Build) void {
 
     // Kernel arch modules
     const exception = b.createModule(.{ .root_source_file = b.path("kernel/arch/aarch64/exception.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{.{ .name = "uart", .module = uart }} });
-    const arch_mmu = b.createModule(.{ .root_source_file = b.path("kernel/arch/aarch64/mmu.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{.{ .name = "uart", .module = uart }} });
-
-    // Kernel core modules
-    const mmu = b.createModule(.{ .root_source_file = b.path("kernel/src/mmu.zig"), .target = opts.target, .optimize = opts.optimize });
+    const timer = b.createModule(.{ .root_source_file = b.path("kernel/arch/aarch64/timer.zig"), .target = opts.target, .optimize = opts.optimize });
     const cap = b.createModule(.{ .root_source_file = b.path("kernel/src/cap.zig"), .target = opts.target, .optimize = opts.optimize });
     const ipc = b.createModule(.{ .root_source_file = b.path("kernel/src/ipc.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{.{ .name = "cap", .module = cap }} });
+    const sched = b.createModule(.{ .root_source_file = b.path("kernel/src/sched.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "cap", .module = cap }, .{ .name = "ipc", .module = ipc } } });
 
     // Kernel executable
     const kernel = b.addExecutable(.{
@@ -35,10 +37,10 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "uart", .module = uart },
                 .{ .name = "exception", .module = exception },
-                .{ .name = "arch_mmu", .module = arch_mmu },
-                .{ .name = "mmu", .module = mmu },
                 .{ .name = "cap", .module = cap },
                 .{ .name = "ipc", .module = ipc },
+                .{ .name = "sched", .module = sched },
+                .{ .name = "timer", .module = timer },
             },
         }),
     });
@@ -46,6 +48,7 @@ pub fn build(b: *std.Build) void {
     kernel.setLinkerScript(b.path("kernel/arch/aarch64/linker.ld"));
     kernel.addAssemblyFile(b.path("kernel/arch/aarch64/boot.S"));
     kernel.addAssemblyFile(b.path("kernel/arch/aarch64/vectors.S"));
+    kernel.addAssemblyFile(b.path("kernel/arch/aarch64/context_switch.S"));
 
     // Output raw binary for QEMU
     const raw = kernel.addObjCopy(.{ .format = .bin });
@@ -81,4 +84,14 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(ipc_tests).step);
+
+    const host_ipc = b.createModule(.{ .root_source_file = b.path("kernel/src/ipc.zig"), .target = b.graph.host, .imports = &.{.{ .name = "cap", .module = host_cap }} });
+    const sched_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("kernel/src/sched.zig"),
+            .target = b.graph.host,
+            .imports = &.{ .{ .name = "cap", .module = host_cap }, .{ .name = "ipc", .module = host_ipc } },
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(sched_tests).step);
 }
