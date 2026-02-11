@@ -18,6 +18,10 @@ pub fn build(b: *std.Build) void {
 
     // Kernel arch modules
     const exception = b.createModule(.{ .root_source_file = b.path("kernel/arch/aarch64/exception.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{.{ .name = "uart", .module = uart }} });
+    const arch_mmu = b.createModule(.{ .root_source_file = b.path("kernel/arch/aarch64/mmu.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{.{ .name = "uart", .module = uart }} });
+
+    // Kernel core modules
+    const mmu = b.createModule(.{ .root_source_file = b.path("kernel/src/mmu.zig"), .target = opts.target, .optimize = opts.optimize });
 
     // Kernel executable
     const kernel = b.addExecutable(.{
@@ -29,6 +33,8 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "uart", .module = uart },
                 .{ .name = "exception", .module = exception },
+                .{ .name = "arch_mmu", .module = arch_mmu },
+                .{ .name = "mmu", .module = mmu },
             },
         }),
     });
