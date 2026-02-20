@@ -67,11 +67,15 @@ gaoos-run zig-out/bin/kernel8.img -- -d int,cpu_reset
 
 | Address | Use |
 |---------|-----|
-| `0x70000-0x71FFF` | Bootstrap page tables (L1+L2, set up in boot.S) |
+| `0x70000-0x70FFF` | L1 page table (set up in boot.S) |
+| `0x71000-0x71FFF` | L2 page table (512 entries, 2MB blocks) |
 | `0x80000` | Kernel load address (`_start`) |
-| `0x200000-0x3FFFFF` | User-space program (EL0-accessible, AP=01) |
+| `0x200000-0x3FFFFF` | User-space program (EL0-accessible, AP=01 set at runtime) |
 | `0x3F000000` | BCM2837 peripheral MMIO base |
 | `0x3F201000` | PL011 UART base |
+| `0x40000000` | QA7 local peripherals (core timer, IRQ source) |
+| `0x40000040` | Core 0 timer control (enables virtual timer IRQ) |
+| `0x40000060` | Core 0 IRQ source register (bit 3 = CNTVIRQ) |
 
 ### Module Dependency Chain (build.zig)
 
@@ -86,9 +90,10 @@ Kernel:    cap → ipc → sched → syscall
 
 - **cap.zig**: 256-slot capability table per thread with generation-based invalidation. Types: frame, aspace, thread, ipc_endpoint, irq, device. Rights: read, write, grant, revoke. `derive()` can only attenuate (remove rights), never escalate.
 - **ipc.zig**: Endpoints with 16-message ring buffer. Messages carry a tag (u64), 256-byte payload, and up to 4 capability slots. `recv()` supports tag-filtered selective receive (linear scan + reorder).
-- **sched.zig**: 64-thread round-robin scheduler. Thread states: free/ready/running/blocked/dead. Global arrays: `cap_tables[64]`, `endpoints[64]`. Timer preemption via `schedule()` called from IRQ handler.
-- **syscall.zig**: SVC from EL0 dispatched via ESR_EL1 exception class 0x15. Syscall number in x8, args in x0-x2. Current syscalls: SYS_WRITE(0), SYS_EXIT(1), SYS_YIELD(2), SYS_CAP_READ(3).
-- **mmu.zig**: 4-level page table walker (4KB granule). Bitmap-based frame allocator.
+- **sched.zig**: 64-thread round-robin scheduler. Thread states: free/ready/running/blocked/dead. Global arrays: `cap_tables[64]`, `endpoints[64]`. Timer preemption via `schedule()` called from IRQ handler. Singleton at `sched.global` (package-level `pub var`).
+- **syscall.zig**: SVC from EL0 dispatched via ESR_EL1 exception class 0x15. Syscall number in x8, args in x0-x2. Current syscalls: SYS_WRITE(0), SYS_EXIT(1), SYS_YIELD(2), SYS_CAP_READ(3). Error codes: `E_BADCAP(-1)`, `E_BADARG(-2)`, `E_BADSYS(-3)`.
+- **kernel/src/mmu.zig**: Portable page table walker (4-level, 4KB granule) + bitmap frame allocator. Host-testable.
+- **kernel/arch/aarch64/mmu.zig**: Register-level MMU control (MAIR/TCR/SCTLR/TTBR). Not currently used — boot.S handles bootstrap inline.
 
 ### Exception Handling
 
@@ -99,6 +104,17 @@ Exception vectors in `vectors.S` (2KB-aligned at VBAR_EL1, 16 entries × 128 byt
 ### User-Space Programs
 
 `user_entry.S` contains the first user program. Must be position-independent (no literal pools — only `movz`/`movk` immediates and PC-relative branches). Copied to 0x200000 at boot. Entered via `eret` with ELR_EL1=0x200000, SPSR=0 (EL0).
+
+## Implementation Gotchas
+
+- **Two `mmu.zig` files**: `kernel/src/mmu.zig` is the portable data-structure layer (page table walker, frame allocator, host-testable); `kernel/arch/aarch64/mmu.zig` is the register-level control layer. They serve different purposes.
+- **NEON/FP disabled** in the Zig target (`.cpu_features_sub` in build.zig) to avoid 16-byte alignment faults from SIMD stores on naturally 8-byte aligned struct fields. Context zeroing uses field-by-field assignment (`zeroContext()`) for the same reason — never use `@memset` on Context structs.
+- **Exception frame layout**: vectors.S saves x0 at `frame[31]`, x1 at `frame[32]` (relocated from mini-push at entry), x2-x29 at `frame[0..27]`. Syscall reads x8 at `frame[6]`.
+- **User program must be position-independent**: only `movz`/`movk` immediates and PC-relative branches — no literal pools — because it is memcpy'd to 0x200000 at runtime.
+
+## Project Status
+
+Phase 1 (minimal kernel) is complete: boot, UART, MMU bootstrap, capabilities, IPC, scheduler, syscalls, first EL0 user program. Next phases: LibOS prototype, multi-runtime, BEAM integration. See `docs/design/00_DESIGN.md` for the full roadmap and `docs/decisions/ADR-*.md` for architecture decisions.
 
 ## Code Conventions
 
