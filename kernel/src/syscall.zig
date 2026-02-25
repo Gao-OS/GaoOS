@@ -1062,6 +1062,13 @@ test "sysThreadReap rejects non-dead thread" {
     try testing.expectEqual(E_BADARG, sysThreadReap(tid, child_cap));
 }
 
+test "sysWrite with zero length returns E_OK without ptr validation" {
+    const tid = testSetup();
+    defer testTeardown();
+    // cap[0] = valid device cap; buf_ptr in kernel range but len=0 bypasses validation
+    try testing.expectEqual(E_OK, sysWrite(tid, 0, 0x80000, 0));
+}
+
 test "sysWrite rejects kernel pointer" {
     const tid = testSetup();
     defer testTeardown();
