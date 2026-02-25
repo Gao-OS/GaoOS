@@ -340,8 +340,10 @@ fn sysEpGrant(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, thread_cap_id
 fn sysThreadCreate(thread_id: sched.ThreadId, entry_pc: u64, stack_ptr: u64) u64 {
     const table = sched.getCapTable(thread_id) orelse return E_BADCAP;
 
-    if (entry_pc == 0) return E_BADARG;
-    if (stack_ptr == 0) return E_BADARG;
+    // Entry point must be in user-space code range
+    if (!isValidUserRange(entry_pc, 4)) return E_BADARG;
+    // Stack pointer must be in user-space range (stack grows down, so validate the top)
+    if (!isValidUserRange(stack_ptr -| 1, 1)) return E_BADARG;
 
     const new_id = sched.global.spawnAt(entry_pc, stack_ptr, @intFromPtr(&thread_entry_trampoline)) catch {
         return E_FULL;
