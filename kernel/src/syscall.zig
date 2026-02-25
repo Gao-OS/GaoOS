@@ -430,10 +430,14 @@ fn sysEpGrant(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, thread_cap_id
 fn sysThreadCreate(thread_id: sched.ThreadId, entry_pc: u64, stack_ptr: u64) u64 {
     const table = sched.getCapTable(thread_id) orelse return E_BADCAP;
 
-    // Entry point must be in user-space code range
+    // Entry point must be in user-space code range and 4-byte aligned
+    // (ARM64 instruction fetch requires 4-byte alignment)
     if (!isValidUserRange(entry_pc, 4)) return E_BADARG;
-    // Stack pointer must be in user-space range (stack grows down, so validate the top)
+    if (entry_pc & 0x3 != 0) return E_BADARG;
+    // Stack pointer must be in user-space range and 16-byte aligned
+    // (AArch64 ABI requires SP to be 16-byte aligned at function entry)
     if (!isValidUserRange(stack_ptr -| 1, 1)) return E_BADARG;
+    if (stack_ptr & 0xF != 0) return E_BADARG;
 
     const new_id = sched.global.spawnAt(entry_pc, stack_ptr, @intFromPtr(&thread_entry_trampoline)) catch {
         return E_FULL;
@@ -635,7 +639,7 @@ fn sysIpcRecvCap(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIn
 
     // x0 = payload length, x1 = transferred cap index (CAP_NULL if none)
     frame[31] = @as(u64, msg.payload_len);
-    frame[32] = if (msg.cap_count > 0)
+    frame[32] = if (msg.cap_count > 0 and msg.cap_count <= ipc.MAX_MSG_CAPS)
         @as(u64, msg.caps[0])
     else
         @as(u64, cap.CAP_NULL);
@@ -703,7 +707,7 @@ fn sysIpcRecvCapBlock(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.
     }
 
     frame[31] = @as(u64, msg.payload_len);
-    frame[32] = if (msg.cap_count > 0)
+    frame[32] = if (msg.cap_count > 0 and msg.cap_count <= ipc.MAX_MSG_CAPS)
         @as(u64, msg.caps[0])
     else
         @as(u64, cap.CAP_NULL);
