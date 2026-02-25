@@ -1286,6 +1286,26 @@ test "sysIpcRecvCapBlock returns E_CLOSED on closed endpoint" {
     try testing.expectEqual(E_CLOSED, result);
 }
 
+test "sysIpcRecvBlock drains pending before returning E_CLOSED" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Send a message, then close the endpoint
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 0xCAFE));
+    const ep = sched.getEndpoint(tid).?;
+    ep.close();
+
+    // First recv should return the pending message (not E_CLOSED)
+    var frame_buf: [34]u64 = undefined;
+    _ = sysIpcRecvBlock(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(@as(u64, 0xCAFE), frame_buf[32]); // got the message
+
+    // Second recv on closed+empty should return E_CLOSED
+    const result = sysIpcRecvBlock(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(E_CLOSED, result);
+}
+
 test "sysIpcSend and sysIpcRecv round-trip with tag and metadata" {
     const tid = testSetup();
     defer testTeardown();
