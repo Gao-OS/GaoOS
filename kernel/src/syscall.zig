@@ -17,6 +17,7 @@
 const sched = @import("sched");
 const cap = @import("cap");
 const uart = @import("uart");
+const frame_mod = @import("frame");
 
 // ─── Syscall Numbers ───────────────────────────────────────────────
 
@@ -24,6 +25,11 @@ pub const SYS_WRITE = 0; // write(cap_idx, buf_ptr, buf_len) → bytes_written
 pub const SYS_EXIT = 1; // exit() → noreturn (does not return)
 pub const SYS_YIELD = 2; // yield() → 0
 pub const SYS_CAP_READ = 3; // cap_read(cap_idx) → cap_type (introspect a capability)
+pub const SYS_FRAME_ALLOC = 4; // frame_alloc() → cap_idx
+pub const SYS_FRAME_FREE = 5; // frame_free(cap_idx) → 0
+pub const SYS_CAP_DERIVE = 6; // cap_derive(src_cap_idx, new_rights) → new_cap_idx
+pub const SYS_CAP_DELETE = 7; // cap_delete(cap_idx) → 0
+pub const SYS_FRAME_PHYS = 8; // frame_phys(cap_idx) → phys_addr
 
 // ─── Error codes (returned in x0) ──────────────────────────────────
 
@@ -31,6 +37,10 @@ const E_OK: u64 = 0;
 const E_BADCAP: u64 = @bitCast(@as(i64, -1)); // Invalid or insufficient capability
 const E_BADARG: u64 = @bitCast(@as(i64, -2)); // Invalid argument
 const E_BADSYS: u64 = @bitCast(@as(i64, -3)); // Unknown syscall number
+const E_NOMEM: u64 = @bitCast(@as(i64, -4)); // Out of memory
+const E_FULL: u64 = @bitCast(@as(i64, -5)); // Table/queue full
+const E_CLOSED: u64 = @bitCast(@as(i64, -6)); // Endpoint closed
+const E_AGAIN: u64 = @bitCast(@as(i64, -7)); // No matching message
 
 // ─── Dispatch ──────────────────────────────────────────────────────
 
@@ -48,6 +58,11 @@ pub fn dispatch(thread_id: sched.ThreadId, frame: [*]u64) void {
         SYS_EXIT => sysExit(thread_id),
         SYS_YIELD => sysYield(),
         SYS_CAP_READ => sysCapRead(thread_id, @truncate(arg0)),
+        SYS_FRAME_ALLOC => sysFrameAlloc(thread_id),
+        SYS_FRAME_FREE => sysFrameFree(thread_id, @truncate(arg0)),
+        SYS_CAP_DERIVE => sysCapDerive(thread_id, @truncate(arg0), @truncate(arg1)),
+        SYS_CAP_DELETE => sysCapDelete(thread_id, @truncate(arg0)),
+        SYS_FRAME_PHYS => sysFramePhys(thread_id, @truncate(arg0)),
         else => E_BADSYS,
     };
 
@@ -87,7 +102,7 @@ fn sysWrite(thread_id: sched.ThreadId, cap_idx: cap.CapIndex, buf_ptr: u64, buf_
     if (buf_len == 0) return E_OK;
     if (buf_ptr == 0) return E_BADARG;
 
-    // Safety: in Phase 1 we share the identity map, so the pointer is valid.
+    // Safety: in Phase 2 we share the identity map, so the pointer is valid.
     // Future phases will validate against the thread's address space.
     const buf: [*]const u8 = @ptrFromInt(buf_ptr);
     const len: usize = @intCast(@min(buf_len, 4096)); // cap at 4KB per call
@@ -113,17 +128,80 @@ fn sysExit(thread_id: sched.ThreadId) u64 {
 
 /// SYS_YIELD: voluntarily yield the CPU.
 fn sysYield() u64 {
-    // In a full implementation this would trigger a context switch.
-    // For Phase 1.7 demo, it's a no-op that returns success.
     return E_OK;
 }
 
 /// SYS_CAP_READ: introspect a capability (returns the type as u64).
-/// Useful for user-space to verify what capabilities it holds.
 fn sysCapRead(thread_id: sched.ThreadId, cap_idx: cap.CapIndex) u64 {
     const table = sched.getCapTable(thread_id) orelse return E_BADCAP;
     const c = table.lookup(cap_idx) orelse return E_BADCAP;
     return @intFromEnum(c.cap_type);
+}
+
+/// SYS_FRAME_ALLOC: allocate a physical frame and create a frame capability.
+fn sysFrameAlloc(thread_id: sched.ThreadId) u64 {
+    const table = sched.getCapTable(thread_id) orelse return E_BADCAP;
+
+    const paddr = frame_mod.global.alloc() catch return E_NOMEM;
+
+    const cap_idx = table.create(.frame, @intCast(paddr), cap.Rights.READ_WRITE) catch {
+        // Undo the frame allocation if cap table is full
+        frame_mod.global.free(paddr) catch {};
+        return E_FULL;
+    };
+
+    return @as(u64, cap_idx);
+}
+
+/// SYS_FRAME_FREE: free a physical frame and delete its capability.
+fn sysFrameFree(thread_id: sched.ThreadId, cap_idx: cap.CapIndex) u64 {
+    const table = sched.getCapTable(thread_id) orelse return E_BADCAP;
+
+    const c = table.lookup(cap_idx) orelse return E_BADCAP;
+    if (c.cap_type != .frame) return E_BADCAP;
+
+    frame_mod.global.free(@intCast(c.object)) catch return E_BADCAP;
+    table.delete(cap_idx);
+
+    return E_OK;
+}
+
+/// SYS_CAP_DERIVE: derive a new capability with reduced rights.
+fn sysCapDerive(thread_id: sched.ThreadId, src_cap_idx: cap.CapIndex, new_rights_raw: u8) u64 {
+    const table = sched.getCapTable(thread_id) orelse return E_BADCAP;
+
+    const new_rights: cap.Rights = @bitCast(new_rights_raw);
+
+    const new_idx = table.derive(src_cap_idx, new_rights) catch |err| {
+        return switch (err) {
+            error.InvalidCapability => E_BADCAP,
+            error.RightsEscalation => E_BADCAP,
+            error.TableFull => E_FULL,
+        };
+    };
+
+    return @as(u64, new_idx);
+}
+
+/// SYS_CAP_DELETE: delete a capability from the calling thread's table.
+fn sysCapDelete(thread_id: sched.ThreadId, cap_idx: cap.CapIndex) u64 {
+    const table = sched.getCapTable(thread_id) orelse return E_BADCAP;
+
+    if (table.lookup(cap_idx) == null) return E_BADCAP;
+    table.delete(cap_idx);
+
+    return E_OK;
+}
+
+/// SYS_FRAME_PHYS: query the physical address of a frame capability.
+fn sysFramePhys(thread_id: sched.ThreadId, cap_idx: cap.CapIndex) u64 {
+    const table = sched.getCapTable(thread_id) orelse return E_BADCAP;
+
+    const c = table.lookup(cap_idx) orelse return E_BADCAP;
+    if (c.cap_type != .frame) return E_BADCAP;
+    if (!c.rights.read) return E_BADCAP;
+
+    return @intCast(c.object);
 }
 
 fn putDec(val: u32) void {
