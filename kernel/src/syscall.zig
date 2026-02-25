@@ -54,6 +54,25 @@ const E_FULL: u64 = @bitCast(@as(i64, -5));
 const E_CLOSED: u64 = @bitCast(@as(i64, -6));
 const E_AGAIN: u64 = @bitCast(@as(i64, -7));
 
+// ─── User pointer validation ─────────────────────────────────────
+//
+// Identity-mapped user-space range: blocks 1-31 (0x200000 to 0x3FFFFFF).
+// Any pointer from user space must fall within this range. The kernel
+// resides in block 0 (0x80000+) which is EL1-only — accepting a kernel
+// address would let user space read/write arbitrary kernel memory.
+
+const USER_MEM_START: u64 = 0x200000;
+const USER_MEM_END: u64 = 0x3FFFFFF;
+
+fn isValidUserRange(ptr: u64, len: u64) bool {
+    if (len == 0) return true;
+    if (ptr < USER_MEM_START) return false;
+    // Check for overflow and range
+    const end = @addWithOverflow(ptr, len - 1);
+    if (end[1] != 0) return false; // overflow
+    return end[0] <= USER_MEM_END;
+}
+
 // ─── Dispatch ──────────────────────────────────────────────────────
 
 pub fn dispatch(thread_id: sched.ThreadId, frame: [*]u64) void {
@@ -118,10 +137,10 @@ fn sysWrite(thread_id: sched.ThreadId, cap_idx: cap.CapIndex, buf_ptr: u64, buf_
     if (!c.rights.write) return E_BADCAP;
 
     if (buf_len == 0) return E_OK;
-    if (buf_ptr == 0) return E_BADARG;
+    const len: usize = @intCast(@min(buf_len, 4096));
+    if (!isValidUserRange(buf_ptr, len)) return E_BADARG;
 
     const buf: [*]const u8 = @ptrFromInt(buf_ptr);
-    const len: usize = @intCast(@min(buf_len, 4096));
 
     for (buf[0..len]) |byte| {
         uart.putc(byte);
@@ -213,6 +232,8 @@ fn sysIpcSend(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u64,
     const ep = sched.getEndpoint(ep_idx) orelse return E_BADCAP;
 
     const len: u32 = @intCast(@min(msg_len, ipc.MAX_PAYLOAD));
+    if (len > 0 and !isValidUserRange(msg_ptr, len)) return E_BADARG;
+
     var msg = ipc.Message{ .tag = tag, .payload_len = len };
 
     if (msg_ptr != 0 and len > 0) {
@@ -256,6 +277,12 @@ fn sysIpcRecv(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex
         frame[31] = E_BADCAP;
         return E_BADCAP;
     };
+
+    // Validate user buffer before consuming message (avoid losing messages on bad ptr)
+    if (buf_ptr != 0 and !isValidUserRange(buf_ptr, ipc.MAX_PAYLOAD)) {
+        frame[31] = E_BADARG;
+        return E_BADARG;
+    }
 
     const msg = ep.recv(tag_filter) orelse {
         frame[31] = E_AGAIN;
@@ -397,6 +424,8 @@ fn sysIpcSendCap(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u
     const receiver_table = sched.getCapTable(ep_idx) orelse return E_BADCAP;
 
     const len: u32 = @intCast(@min(msg_len, ipc.MAX_PAYLOAD));
+    if (len > 0 and !isValidUserRange(msg_ptr, len)) return E_BADARG;
+
     var msg = ipc.Message{ .payload_len = len };
     if (msg_ptr != 0 and len > 0) {
         const src: [*]const u8 = @ptrFromInt(msg_ptr);
@@ -440,6 +469,13 @@ fn sysIpcRecvCap(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIn
         frame[31] = E_BADCAP;
         return E_BADCAP;
     };
+
+    // Validate user buffer before consuming message
+    if (buf_ptr != 0 and !isValidUserRange(buf_ptr, ipc.MAX_PAYLOAD)) {
+        frame[31] = E_BADARG;
+        frame[32] = @as(u64, cap.CAP_NULL);
+        return E_BADARG;
+    }
 
     const msg = ep.recv(tag_filter) orelse {
         frame[31] = E_AGAIN;
