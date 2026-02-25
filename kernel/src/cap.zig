@@ -397,6 +397,23 @@ test "derive with NONE rights produces fully attenuated cap" {
     try testing.expectEqual(@as(usize, 0x20000), c.object);
 }
 
+test "delete out-of-bounds index is silent" {
+    var table = CapabilityTable{};
+    const idx = try table.create(.frame, 0x1000, Rights.ALL);
+    try testing.expectEqual(@as(u32, 1), table.count);
+
+    // Delete at MAX_CAPS boundary — should be a no-op
+    table.delete(MAX_CAPS);
+    try testing.expectEqual(@as(u32, 1), table.count);
+
+    // Delete at CAP_NULL (0xFFFFFFFF) — should be a no-op
+    table.delete(CAP_NULL);
+    try testing.expectEqual(@as(u32, 1), table.count);
+
+    // Original cap still valid
+    try testing.expect(table.lookup(idx) != null);
+}
+
 test "derive chain attenuation" {
     var table = CapabilityTable{};
     const root = try table.create(.ipc_endpoint, 0x30000, Rights.ALL);

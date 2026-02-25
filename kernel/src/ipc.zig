@@ -486,6 +486,28 @@ test "cap transfer is atomic: full table rolls back" {
     try testing.expectEqual(cap.MAX_CAPS - 1, receiver_table.count);
 }
 
+test "selective receive exhausts all matching messages in FIFO order" {
+    var ep = Endpoint{};
+
+    // Send 5 messages all with the same tag
+    for (0..5) |i| {
+        var buf: [1]u8 = .{@intCast(i)};
+        try ep.send(Message.init(42, &buf), null, null);
+    }
+    try testing.expectEqual(@as(u32, 5), ep.count);
+
+    // Selectively receive all 5 — should return in FIFO order
+    for (0..5) |i| {
+        const msg = ep.recv(42).?;
+        try testing.expectEqual(@as(u64, 42), msg.tag);
+        try testing.expectEqual(@as(u8, @intCast(i)), msg.payload[0]);
+    }
+
+    // Queue should now be empty
+    try testing.expectEqual(@as(u32, 0), ep.count);
+    try testing.expect(ep.recv(42) == null);
+}
+
 test "cap transfer with sparse CAP_NULL gaps" {
     var sender = cap.CapabilityTable{};
     var receiver = cap.CapabilityTable{};

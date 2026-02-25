@@ -186,6 +186,35 @@ test "fault reason killed serializes correctly" {
     try testing.expectEqual(@as(u64, 0), copy.fault_addr);
 }
 
+test "notify with out-of-range thread_id is silent" {
+    sched.global = .{};
+
+    // thread_id 999 is way beyond MAX_THREADS — should not crash
+    notify(999, .exception, 0xDEAD, 0);
+
+    // No endpoint should have received anything
+    const ep = sched.getEndpoint(0).?;
+    try testing.expect(ep.recv(ipc.TAG_ANY) == null);
+}
+
+test "notify with out-of-range supervisor_ep is silent" {
+    sched.global = .{};
+
+    const id = try sched.global.spawn();
+    // Set supervisor_ep to a valid-looking but out-of-range value
+    sched.global.threads[id].supervisor_ep = sched.MAX_THREADS + 10;
+
+    // Should silently return — getEndpoint returns null for out-of-range
+    notify(id, .killed, 0, 0);
+
+    // Thread's own endpoint should be empty
+    const ep = sched.getEndpoint(id).?;
+    try testing.expect(ep.recv(ipc.TAG_ANY) == null);
+
+    sched.global.kill(id);
+    sched.global.reap(id);
+}
+
 test "notify skips thread with no supervisor" {
     sched.global = .{};
 

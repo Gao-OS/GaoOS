@@ -554,6 +554,21 @@ test "kill current running thread does not resurrect on schedule" {
     try testing.expectEqual(ThreadState.dead, s.threads[id].state);
 }
 
+test "wakeBlockedRecv with no blocked threads is a no-op" {
+    var s = Scheduler{};
+    const t0 = try s.spawn();
+    const t1 = try s.spawn();
+
+    // Both threads are ready (not blocked)
+    try testing.expectEqual(ThreadState.ready, s.threads[t0].state);
+    try testing.expectEqual(ThreadState.ready, s.threads[t1].state);
+
+    // Wake on an arbitrary endpoint — should change nothing
+    s.wakeBlockedRecv(5);
+    try testing.expectEqual(ThreadState.ready, s.threads[t0].state);
+    try testing.expectEqual(ThreadState.ready, s.threads[t1].state);
+}
+
 test "schedule after kill of current finds newly-spawned thread" {
     var s = Scheduler{};
     const id = try s.spawn();
