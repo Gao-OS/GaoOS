@@ -3,6 +3,7 @@
 {
   packages = [
     pkgs.zig
+    pkgs.zls
     pkgs.qemu
   ];
 
