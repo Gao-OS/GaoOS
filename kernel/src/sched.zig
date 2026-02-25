@@ -352,6 +352,46 @@ test "thread table full" {
     try testing.expectError(error.ThreadTableFull, result);
 }
 
+test "spawnAt sets context fields" {
+    var s = Scheduler{};
+    const id = try s.spawnAt(0x200000, 0x400000, 0x80100);
+    const thread = s.getThread(id).?;
+    try testing.expectEqual(@as(u64, 0x200000), thread.context.x19);
+    try testing.expectEqual(@as(u64, 0x400000), thread.context.x20);
+    try testing.expectEqual(@as(u64, 0x80100), thread.context.x30);
+    try testing.expect(thread.stack_base != 0);
+}
+
+test "getThread returns null for free slot" {
+    var s = Scheduler{};
+    try testing.expect(s.getThread(0) == null); // slot 0 is free
+    try testing.expect(s.getThread(999) == null); // out of range
+}
+
+test "kill ignores free and dead threads" {
+    var s = Scheduler{};
+    // Kill on free thread should not crash or change state
+    s.kill(0);
+    try testing.expectEqual(ThreadState.free, s.threads[0].state);
+
+    // Kill on already-dead thread should be idempotent
+    const id = try s.spawn();
+    s.kill(id);
+    try testing.expectEqual(ThreadState.dead, s.threads[id].state);
+    s.kill(id); // second kill should not crash
+    try testing.expectEqual(ThreadState.dead, s.threads[id].state);
+}
+
+test "reap resets supervisor_ep" {
+    var s = Scheduler{};
+    const id = try s.spawn();
+    s.threads[id].supervisor_ep = 5;
+    s.kill(id);
+    s.reap(id);
+    try testing.expectEqual(@as(u32, 0), s.threads[id].supervisor);
+    try testing.expectEqual(ThreadState.free, s.threads[id].state);
+}
+
 test "per-thread cap table and endpoint" {
     // Use thread ID 63 (last slot) to avoid collision with other tests
     const id: ThreadId = 63;

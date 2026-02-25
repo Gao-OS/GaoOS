@@ -319,6 +319,70 @@ test "send_cap with invalid cap index returns error" {
     try testing.expectError(error.InvalidCapability, result);
 }
 
+test "Message.init truncates long payload" {
+    var data: [512]u8 = undefined;
+    for (&data) |*b| b.* = 0xAB;
+    const msg = Message.init(1, &data);
+    try testing.expectEqual(@as(u32, MAX_PAYLOAD), msg.payload_len);
+    try testing.expectEqual(@as(u8, 0xAB), msg.payload[0]);
+    try testing.expectEqual(@as(u8, 0xAB), msg.payload[MAX_PAYLOAD - 1]);
+}
+
+test "selective receive preserves unmatched messages in order" {
+    var ep = Endpoint{};
+    try ep.send(Message.init(1, "a"), null, null);
+    try ep.send(Message.init(2, "b"), null, null);
+    try ep.send(Message.init(3, "c"), null, null);
+    try ep.send(Message.init(1, "d"), null, null);
+
+    // Pull tag=2 from the middle
+    const m = ep.recv(2).?;
+    try testing.expectEqual(@as(u64, 2), m.tag);
+    try testing.expectEqual(@as(u32, 3), ep.count);
+
+    // Remaining should be: tag=1 "a", tag=3 "c", tag=1 "d"
+    const r1 = ep.recv(TAG_ANY).?;
+    try testing.expectEqual(@as(u64, 1), r1.tag);
+    try testing.expectEqualSlices(u8, "a", r1.getPayload());
+
+    const r2 = ep.recv(TAG_ANY).?;
+    try testing.expectEqual(@as(u64, 3), r2.tag);
+
+    const r3 = ep.recv(TAG_ANY).?;
+    try testing.expectEqual(@as(u64, 1), r3.tag);
+    try testing.expectEqualSlices(u8, "d", r3.getPayload());
+}
+
+test "multiple cap transfers in one message" {
+    var ep = Endpoint{};
+    var sender = cap.CapabilityTable{};
+    var receiver = cap.CapabilityTable{};
+
+    const c0 = try sender.create(.frame, 0x1000, cap.Rights.ALL);
+    const c1 = try sender.create(.frame, 0x2000, cap.Rights.ALL);
+
+    var msg = Message.init(1, "two caps");
+    try msg.attachCap(c0);
+    try msg.attachCap(c1);
+    try ep.send(msg, &sender, &receiver);
+
+    // Both caps removed from sender
+    try testing.expect(sender.lookup(c0) == null);
+    try testing.expect(sender.lookup(c1) == null);
+
+    // Receiver has both
+    const received = ep.recv(TAG_ANY).?;
+    try testing.expectEqual(@as(u32, 2), received.cap_count);
+    try testing.expect(receiver.lookup(received.caps[0]) != null);
+    try testing.expect(receiver.lookup(received.caps[1]) != null);
+
+    // Verify they're different caps with correct objects
+    const t0 = receiver.lookup(received.caps[0]).?;
+    const t1 = receiver.lookup(received.caps[1]).?;
+    try testing.expectEqual(@as(usize, 0x1000), t0.object);
+    try testing.expectEqual(@as(usize, 0x2000), t1.object);
+}
+
 test "recv returns cap_count 0 when no cap sent" {
     var ep = Endpoint{};
     const msg = Message.init(7, "no cap");
