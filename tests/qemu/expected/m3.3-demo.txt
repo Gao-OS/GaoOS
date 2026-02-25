@@ -1,0 +1,32 @@
+GaoOS v0.2
+MMU enabled (identity map from boot.S).
+Initializing scheduler...
+  Thread 0 (init): id=0
+  Granted: cap[0] = device(UART, write)
+Starting timer (10ms slice)...
+Setting up user space...
+  User program at 0x200000 (257648 bytes)
+
+Dropping to EL0 → user init
+─────────────────────────────────
+GaoOS M3.3 Multi-Runtime Demo
+==============================
+Spawning Worker A...
+Spawning Worker B...
+Workers spawned. Waiting for messages...
+  [Worker A] hello!
+  [Worker A] allocated frame 0x402000
+  [Worker A] sent frame cap to orchestrator.
+  [Worker A] exiting.
+[kernel] thread 1 exited via syscall
+  [Worker B] hello!
+  [Worker B] exiting.
+[kernel] thread 2 exited via syscall
+Orchestrator: received frame 0x402000
+Orchestrator: fault from thread 1 (1/2)
+Orchestrator: fault from thread 2 (2/2)
+Cap delegation: OK
+Fault supervision: OK
+All workers done. System shutting down.
+[kernel] thread 0 exited via syscall
+Returning to kernel idle loop.

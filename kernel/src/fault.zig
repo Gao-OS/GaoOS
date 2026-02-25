@@ -134,3 +134,57 @@ test "notify with full endpoint drops silently" {
     // Count unchanged — notification dropped
     try testing.expectEqual(before, ep.count);
 }
+
+test "notify sends fault to valid supervisor" {
+    // Reset scheduler state for this test
+    sched.global = .{};
+
+    const sup_id = try sched.global.spawn(); // thread 0 = supervisor
+    const child_id = try sched.global.spawn(); // thread 1 = child
+
+    // Set child's supervisor endpoint to supervisor's endpoint index
+    sched.global.threads[child_id].supervisor_ep = sup_id;
+
+    // Notify via the top-level notify() which looks up the thread → endpoint chain
+    notify(child_id, .exit, 0, 0);
+
+    // The fault message should arrive at supervisor's endpoint
+    const ep = sched.getEndpoint(sup_id).?;
+    const received = ep.recv(FAULT_TAG);
+    try testing.expect(received != null);
+    const msg = received.?;
+    try testing.expectEqual(FAULT_TAG, msg.tag);
+
+    // Deserialize and verify thread_id
+    var fm: FaultMsg = undefined;
+    const dst: [*]u8 = @ptrCast(&fm);
+    for (0..@sizeOf(FaultMsg)) |i| {
+        dst[i] = msg.payload[i];
+    }
+    try testing.expectEqual(child_id, fm.thread_id);
+    try testing.expectEqual(@as(u8, @intFromEnum(Reason.exit)), fm.reason);
+
+    // Cleanup
+    sched.global.kill(sup_id);
+    sched.global.reap(sup_id);
+    sched.global.kill(child_id);
+    sched.global.reap(child_id);
+}
+
+test "notify skips thread with no supervisor" {
+    sched.global = .{};
+
+    const id = try sched.global.spawn();
+    // supervisor_ep defaults to 0xFFFFFFFF (none)
+    try testing.expectEqual(@as(u32, 0xFFFFFFFF), sched.global.threads[id].supervisor_ep);
+
+    // This should be a no-op — no crash, no message sent anywhere
+    notify(id, .killed, 0xDEAD, 0);
+
+    // The thread's own endpoint should be empty (no self-notification)
+    const ep = sched.getEndpoint(id).?;
+    try testing.expect(ep.recv(ipc.TAG_ANY) == null);
+
+    sched.global.kill(id);
+    sched.global.reap(id);
+}
