@@ -1062,6 +1062,14 @@ test "sysThreadReap rejects non-dead thread" {
     try testing.expectEqual(E_BADARG, sysThreadReap(tid, child_cap));
 }
 
+test "sysThreadReap rejects non-thread cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    // Endpoint cap is not a thread cap
+    try testing.expectEqual(E_BADCAP, sysThreadReap(tid, ep_cap));
+}
+
 test "sysWrite with zero length returns E_OK without ptr validation" {
     const tid = testSetup();
     defer testTeardown();
