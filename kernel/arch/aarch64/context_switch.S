@@ -23,6 +23,7 @@
 //   offset 80: x29 (FP)
 //   offset 88: x30 (LR / return address)
 //   offset 96: sp
+//   offset 104: sp_el0
 
 .section .text
 .global context_switch
@@ -36,6 +37,8 @@ context_switch:
     stp     x29, x30, [x0, #80]
     mov     x2, sp
     str     x2,       [x0, #96]
+    mrs     x2, sp_el0
+    str     x2,       [x0, #104]
 
     // Restore callee-saved registers from new context (x1)
     ldp     x19, x20, [x1, #0]
@@ -46,6 +49,8 @@ context_switch:
     ldp     x29, x30, [x1, #80]
     ldr     x2,       [x1, #96]
     mov     sp, x2
+    ldr     x2,       [x1, #104]
+    msr     sp_el0, x2
 
     // Return to the new thread's saved LR (x30)
     ret

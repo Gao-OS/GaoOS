@@ -154,7 +154,8 @@ fn sysFrameAlloc(thread_id: sched.ThreadId) u64 {
     const table = sched.getCapTable(thread_id) orelse return E_BADCAP;
     const paddr = frame_mod.global.alloc() catch return E_NOMEM;
 
-    const cap_idx = table.create(.frame, @intCast(paddr), cap.Rights.READ_WRITE) catch {
+    // Frame creator gets ALL rights (including grant) so it can delegate the frame via IPC.
+    const cap_idx = table.create(.frame, @intCast(paddr), cap.Rights.ALL) catch {
         frame_mod.global.free(paddr) catch {};
         return E_FULL;
     };

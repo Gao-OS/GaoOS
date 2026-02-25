@@ -46,6 +46,7 @@ pub const Context = struct {
     x29: u64 = 0,
     x30: u64 = 0,
     sp: u64 = 0,
+    sp_el0: u64 = 0, // EL0 user-space stack pointer — must be saved/restored across context switches
 };
 
 /// Thread control block — lightweight, contains only scheduling state.
@@ -236,6 +237,7 @@ fn zeroContext(ctx: *Context) void {
     ctx.x29 = 0;
     ctx.x30 = 0;
     ctx.sp = 0;
+    ctx.sp_el0 = 0;
 }
 
 pub var global: Scheduler = .{};

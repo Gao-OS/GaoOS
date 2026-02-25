@@ -180,6 +180,7 @@ pub fn supervisorSet(thread_cap: u32, ep_cap: u32) i64 {
 pub const RecvCapResult = struct {
     payload_len: i64,
     cap_idx: u32, // CAP_NULL (0xFFFFFFFF) if no cap transferred
+    _pad: u32 = 0, // pad to 16 bytes — ensures x0+x1 return (not x8 sret)
 };
 
 pub fn ipcSendCap(ep_cap: u32, buf: [*]const u8, len: usize, cap_to_send: u32) i64 {
