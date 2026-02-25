@@ -1478,6 +1478,115 @@ test "sysIpcRecvCap returns transferred cap index" {
     try testing.expectEqual(cap.CapabilityType.frame, transferred.cap_type);
 }
 
+test "sysIpcRecvCap returns CAP_NULL when no cap attached" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Send a plain message with no capability transfer
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 0xABCD));
+
+    // RecvCap should return the message; x1 (frame[32]) must be CAP_NULL
+    var frame_buf: [34]u64 = undefined;
+    _ = sysIpcRecvCap(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(@as(u64, cap.CAP_NULL), frame_buf[32]);
+}
+
+test "sysEpGrant rejects non-endpoint cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    // Pass a frame cap where an endpoint cap is required
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    try testing.expectEqual(E_BADCAP, sysEpGrant(tid, frame_cap, child_cap));
+}
+
+test "sysEpGrant rejects without grant right" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    // Create endpoint cap with read+write but no grant right
+    const table = sched.getCapTable(tid).?;
+    const no_grant_ep = table.create(.ipc_endpoint, @intCast(tid), cap.Rights{ .read = true, .write = true }) catch unreachable;
+    try testing.expectEqual(E_BADCAP, sysEpGrant(tid, no_grant_ep, child_cap));
+}
+
+test "sysIpcRecvBlock succeeds immediately when message available" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Pre-populate the queue
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 0x1234));
+
+    // RecvBlock should return the message without blocking
+    var frame_buf: [34]u64 = undefined;
+    _ = sysIpcRecvBlock(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(@as(u64, 0x1234), frame_buf[32]); // tag
+    // Thread must not have been blocked
+    try testing.expectEqual(sched.ThreadState.running, sched.global.threads[tid].state);
+}
+
+test "sysIpcRecvCapBlock drains pending before E_CLOSED" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Send a message then close the endpoint
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 0xBEEB));
+    const ep = sched.getEndpoint(tid).?;
+    ep.close();
+
+    // First RecvCapBlock should deliver the pending message (not E_CLOSED)
+    var frame_buf: [34]u64 = undefined;
+    _ = sysIpcRecvCapBlock(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expect(frame_buf[31] != E_CLOSED); // got the pending message
+
+    // Second RecvCapBlock on closed+empty should return E_CLOSED
+    const result = sysIpcRecvCapBlock(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(E_CLOSED, result);
+}
+
+test "sysFrameFree rejects non-frame cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    // cap[0] is a device cap — not a frame
+    try testing.expectEqual(E_BADCAP, sysFrameFree(tid, 0));
+}
+
+test "sysSupervisorSet rejects non-endpoint cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    // Pass a frame cap where an endpoint cap is required
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    try testing.expectEqual(E_BADCAP, sysSupervisorSet(tid, child_cap, frame_cap));
+}
+
+test "sysThreadKill rejects non-thread cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Pass an endpoint cap where a thread cap is required
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    try testing.expectEqual(E_BADCAP, sysThreadKill(tid, ep_cap));
+}
+
+test "sysThreadGrant rejects non-thread cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Pass an endpoint cap where a thread cap is required
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    try testing.expectEqual(E_BADCAP, sysThreadGrant(tid, ep_cap, 0));
+}
+
+test "sysIpcSend rejects non-endpoint cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Pass a frame cap where an endpoint cap is required
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    try testing.expectEqual(E_BADCAP, sysIpcSend(tid, frame_cap, 0, 0, 0));
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');
