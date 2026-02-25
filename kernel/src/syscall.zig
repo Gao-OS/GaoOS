@@ -1621,6 +1621,27 @@ test "sysThreadKill rejects non-thread cap" {
     try testing.expectEqual(E_BADCAP, sysThreadKill(tid, ep_cap));
 }
 
+test "sysThreadKill rejects thread cap without write right" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    // Derive a read-only thread cap
+    const table = sched.getCapTable(tid).?;
+    const ro_cap = table.derive(child_cap, cap.Rights{ .read = true }) catch unreachable;
+    try testing.expectEqual(E_BADCAP, sysThreadKill(tid, ro_cap));
+}
+
+test "sysThreadReap rejects thread cap without write right" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    // Kill the child so it's in dead state, then try reap with read-only cap
+    _ = sysThreadKill(tid, child_cap);
+    const table = sched.getCapTable(tid).?;
+    const ro_cap = table.derive(child_cap, cap.Rights{ .read = true }) catch unreachable;
+    try testing.expectEqual(E_BADCAP, sysThreadReap(tid, ro_cap));
+}
+
 test "sysThreadGrant rejects non-thread cap" {
     const tid = testSetup();
     defer testTeardown();
