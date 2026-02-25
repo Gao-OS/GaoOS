@@ -106,7 +106,11 @@ pub const Endpoint = struct {
                 const src_idx = msg.caps[i];
                 if (src_idx == cap.CAP_NULL) continue;
 
-                const src_cap = s_table.lookup(src_idx).?;
+                const src_cap = s_table.lookup(src_idx) orelse {
+                    // Cap was already transferred (duplicate index in message) — skip
+                    queued_msg.caps[i] = cap.CAP_NULL;
+                    continue;
+                };
                 const new_idx = r_table.create(
                     src_cap.cap_type,
                     src_cap.object,
@@ -506,6 +510,31 @@ test "selective receive exhausts all matching messages in FIFO order" {
     // Queue should now be empty
     try testing.expectEqual(@as(u32, 0), ep.count);
     try testing.expect(ep.recv(42) == null);
+}
+
+test "duplicate cap index in message does not panic" {
+    var sender = cap.CapabilityTable{};
+    var receiver = cap.CapabilityTable{};
+    var ep = Endpoint{};
+
+    const c0 = try sender.create(.frame, 0xAAAA, cap.Rights.ALL);
+
+    // Build message with the same cap index twice
+    var msg = Message.init(1, "dup");
+    try msg.attachCap(c0);
+    try msg.attachCap(c0); // duplicate!
+
+    // Should not panic — second occurrence is skipped
+    try ep.send(msg, &sender, &receiver);
+
+    // Sender's cap is gone (transferred on first occurrence)
+    try testing.expect(sender.lookup(c0) == null);
+
+    // Receiver got one cap, second slot is CAP_NULL
+    const received = ep.recv(TAG_ANY).?;
+    try testing.expect(received.caps[0] != cap.CAP_NULL);
+    try testing.expectEqual(cap.CAP_NULL, received.caps[1]);
+    try testing.expectEqual(@as(u32, 1), receiver.count);
 }
 
 test "cap transfer with sparse CAP_NULL gaps" {
