@@ -13,4 +13,19 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.0
-      - run: zig build test
+      - name: Unit tests
+        run: zig build test
+      - name: Cross-compile kernel
+        run: zig build
+
+  qemu-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.0
+      - name: Install QEMU
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-arm
+      - name: Build and run QEMU integration test
+        run: zig build qemu-test

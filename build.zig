@@ -166,4 +166,12 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(fault_tests).step);
+
+    // ── QEMU integration test ───────────────────────────────────────
+
+    const qemu_test_step = b.step("qemu-test", "Run QEMU integration test (requires qemu-system-aarch64)");
+    const qemu_test_cmd = b.addSystemCommand(&.{ "bash", "tests/qemu/run_test.sh" });
+    qemu_test_cmd.addFileArg(raw.getOutput());
+    qemu_test_cmd.step.dependOn(b.getInstallStep());
+    qemu_test_step.dependOn(&qemu_test_cmd.step);
 }

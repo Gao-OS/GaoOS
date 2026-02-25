@@ -67,16 +67,36 @@ zig build
 qemu-system-aarch64 -M raspi3b -kernel zig-out/bin/kernel8.img -serial stdio -display none
 ```
 
-## Project Status
+## Demo
 
-GaoOS is in early development.
+The multi-runtime demo boots to EL0 user space and runs concurrent threads with capability delegation, IPC, fault supervision, and a user-space e-ink driver:
+
+```
+$ zig build run
+GaoOS Multi-Runtime Demo
+========================
+Spawning Worker A...
+Spawning Worker B...
+Spawning E-Ink driver...
+  [Worker A] allocated frame 0x403000
+  [Worker A] sent frame cap to orchestrator.
+  [E-Ink] init sequence → write test pattern → refresh → deep sleep
+Orchestrator: received frame 0x403000
+Cap delegation: OK
+Fault supervision: OK
+All workers done. System shutting down.
+```
+
+## Project Status
 
 - [x] Phase 0 — Project scaffolding, toolchain validation
 - [x] Phase 1 — Minimal kernel (boot, UART, MMU, capabilities, IPC, scheduler)
-- [ ] Phase 2 — LibOS prototype (user-space allocator, e-ink driver)
-- [ ] Phase 3 — Multi-runtime (capability delegation, fault supervision)
+- [x] Phase 2 — LibOS prototype (frame allocator, syscalls, thread creation, IPC, e-ink driver)
+- [x] Phase 3 — Multi-runtime (capability delegation, fault supervision, multi-runtime demo)
 - [ ] Phase 4 — BEAM integration
 - [ ] Phase 5 — Hardware bring-up on physical Raspberry Pi
+
+55 host unit tests + 34-marker QEMU integration test.
 
 ## Documentation
 
