@@ -80,27 +80,40 @@ pub const Endpoint = struct {
 
         var queued_msg = msg;
 
-        // Transfer capabilities: remove from sender, create in receiver
-        if (sender_table != null and receiver_table != null) {
+        // Transfer capabilities: remove from sender, create in receiver.
+        // Two-phase: validate all caps first, then transfer atomically.
+        if (sender_table != null and receiver_table != null and msg.cap_count > 0) {
+            const s_table = sender_table.?;
+            const r_table = receiver_table.?;
+
+            // Phase 1: validate all source caps exist and receiver has space
+            var valid_count: u32 = 0;
+            {
+                var i: u32 = 0;
+                while (i < msg.cap_count) : (i += 1) {
+                    if (msg.caps[i] == cap.CAP_NULL) continue;
+                    if (s_table.lookup(msg.caps[i]) == null)
+                        return error.InvalidCapability;
+                    valid_count += 1;
+                }
+            }
+            if (r_table.count + valid_count > cap.MAX_CAPS)
+                return error.TableFull;
+
+            // Phase 2: transfer (cannot fail — space was pre-checked)
             var i: u32 = 0;
             while (i < msg.cap_count) : (i += 1) {
                 const src_idx = msg.caps[i];
                 if (src_idx == cap.CAP_NULL) continue;
 
-                const src_cap = sender_table.?.lookup(src_idx) orelse
-                    return error.InvalidCapability;
-
-                // Create in receiver table
-                const new_idx = receiver_table.?.create(
+                const src_cap = s_table.lookup(src_idx).?;
+                const new_idx = r_table.create(
                     src_cap.cap_type,
                     src_cap.object,
                     src_cap.rights,
-                ) catch return error.TableFull;
+                ) catch unreachable; // pre-checked space
 
-                // Remove from sender
-                sender_table.?.delete(src_idx);
-
-                // Update message with new index (receiver's perspective)
+                s_table.delete(src_idx);
                 queued_msg.caps[i] = new_idx;
             }
         }
@@ -440,4 +453,35 @@ test "selective receive works after ring buffer wraps" {
     try testing.expectEqual(@as(u32, 2), ep.count);
     try testing.expectEqual(@as(u64, 10), ep.recv(TAG_ANY).?.tag);
     try testing.expectEqual(@as(u64, 30), ep.recv(TAG_ANY).?.tag);
+}
+
+test "cap transfer is atomic: full table rolls back" {
+    var sender_table = cap.CapabilityTable{};
+    var receiver_table = cap.CapabilityTable{};
+    var ep = Endpoint{};
+
+    // Fill receiver table to near capacity (MAX_CAPS - 1 slots used)
+    for (0..cap.MAX_CAPS - 1) |i| {
+        _ = try receiver_table.create(.frame, i, cap.Rights.ALL);
+    }
+
+    // Create 2 caps in sender to transfer
+    const cap1 = try sender_table.create(.frame, 0xA000, cap.Rights.ALL);
+    const cap2 = try sender_table.create(.frame, 0xB000, cap.Rights.ALL);
+
+    // Attach both caps to message (2 caps, but only 1 slot available)
+    var msg = Message.init(1, "multi-cap");
+    try msg.attachCap(cap1);
+    try msg.attachCap(cap2);
+
+    // Send should fail atomically — receiver table is too full
+    const result = ep.send(msg, &sender_table, &receiver_table);
+    try testing.expectError(error.TableFull, result);
+
+    // Both caps should still exist in sender (no partial transfer)
+    try testing.expect(sender_table.lookup(cap1) != null);
+    try testing.expect(sender_table.lookup(cap2) != null);
+
+    // Receiver should not have gained any new caps
+    try testing.expectEqual(cap.MAX_CAPS - 1, receiver_table.count);
 }
