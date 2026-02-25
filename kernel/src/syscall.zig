@@ -698,6 +698,52 @@ fn sysIpcRecvCapBlock(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.
     return @as(u64, msg.payload_len);
 }
 
+// ─── Tests ──────────────────────────────────────────────────────────
+
+const testing = @import("std").testing;
+
+test "isValidUserRange accepts valid ranges" {
+    // Zero length is always valid
+    try testing.expect(isValidUserRange(0, 0));
+    try testing.expect(isValidUserRange(0x100000, 0));
+
+    // Exact start of user memory
+    try testing.expect(isValidUserRange(USER_MEM_START, 1));
+    try testing.expect(isValidUserRange(USER_MEM_START, 4096));
+
+    // Exact end of user memory
+    try testing.expect(isValidUserRange(USER_MEM_END, 1));
+
+    // Full user range
+    try testing.expect(isValidUserRange(USER_MEM_START, USER_MEM_END - USER_MEM_START + 1));
+}
+
+test "isValidUserRange rejects invalid ranges" {
+    // Below user memory
+    try testing.expect(!isValidUserRange(0x100000, 1));
+    try testing.expect(!isValidUserRange(0, 1));
+
+    // Just below boundary
+    try testing.expect(!isValidUserRange(USER_MEM_START - 1, 1));
+
+    // Extends past end
+    try testing.expect(!isValidUserRange(USER_MEM_END, 2));
+
+    // Overflow
+    try testing.expect(!isValidUserRange(0xFFFFFFFFFFFFFFFF, 2));
+}
+
+test "capObjectToId accepts valid thread IDs" {
+    try testing.expectEqual(@as(?sched.ThreadId, 0), capObjectToId(0));
+    try testing.expectEqual(@as(?sched.ThreadId, 63), capObjectToId(63));
+}
+
+test "capObjectToId rejects out-of-range values" {
+    try testing.expect(capObjectToId(64) == null);
+    try testing.expect(capObjectToId(0xFFFFFFFF) == null);
+    try testing.expect(capObjectToId(0xDEAD) == null);
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');

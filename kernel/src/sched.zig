@@ -188,6 +188,7 @@ pub const Scheduler = struct {
         if (thread.state == .free or thread.state == .dead) return;
 
         thread.state = .dead;
+        thread.blocked_ep = THREAD_NONE;
         endpoints[id].close();
     }
 
@@ -201,6 +202,7 @@ pub const Scheduler = struct {
         zeroContext(&thread.context);
         thread.stack_base = 0;
         thread.supervisor = 0;
+        thread.supervisor_ep = 0xFFFFFFFF;
         thread.blocked_ep = THREAD_NONE;
         resetCapTable(id);
         resetEndpoint(id);
@@ -403,6 +405,7 @@ test "reap resets supervisor_ep" {
     s.threads[id].supervisor_ep = 5;
     s.kill(id);
     s.reap(id);
+    try testing.expectEqual(@as(u32, 0xFFFFFFFF), s.threads[id].supervisor_ep);
     try testing.expectEqual(@as(u32, 0), s.threads[id].supervisor);
     try testing.expectEqual(ThreadState.free, s.threads[id].state);
 }
@@ -429,6 +432,19 @@ test "wakeBlockedRecv unblocks waiting thread" {
     _ = s.schedule(); // runs t1 (round-robin from t0)
     const next = s.schedule().?;
     try testing.expectEqual(t0, next.id);
+}
+
+test "kill clears blocked_ep" {
+    var s = Scheduler{};
+    const t0 = try s.spawn();
+    _ = s.schedule();
+    s.threads[t0].blocked_ep = 3;
+    s.blockCurrent();
+    try testing.expectEqual(@as(ThreadId, 3), s.threads[t0].blocked_ep);
+
+    s.kill(t0);
+    try testing.expectEqual(ThreadState.dead, s.threads[t0].state);
+    try testing.expectEqual(THREAD_NONE, s.threads[t0].blocked_ep);
 }
 
 test "wakeBlockedRecv ignores threads on other endpoints" {
