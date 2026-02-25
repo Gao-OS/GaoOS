@@ -581,3 +581,43 @@ test "schedule after kill of current finds newly-spawned thread" {
     try testing.expectEqual(ThreadState.running, next.state);
     try testing.expectEqual(ThreadState.dead, s.threads[id].state);
 }
+
+test "getThread returns non-null for dead slot" {
+    // getThread only filters .free; callers must check .dead themselves.
+    // This is intentional: reap/kill use getThread to inspect dead threads.
+    var s = Scheduler{};
+    const id = try s.spawn();
+    s.kill(id);
+    try testing.expectEqual(ThreadState.dead, s.threads[id].state);
+    // getThread must not hide the dead thread from callers
+    try testing.expect(s.getThread(id) != null);
+}
+
+test "schedule returns null when all threads are blocked" {
+    var s = Scheduler{};
+    const t0 = try s.spawn();
+    const t1 = try s.spawn();
+
+    _ = s.schedule(); // t0 running
+    s.threads[t0].blocked_ep = 0;
+    s.blockCurrent();
+    _ = s.schedule(); // t1 running
+    s.threads[t1].blocked_ep = 0;
+    s.blockCurrent();
+
+    // Both blocked — no thread available to schedule
+    try testing.expect(s.schedule() == null);
+}
+
+test "unblock on non-blocked thread is a no-op" {
+    var s = Scheduler{};
+    const id = try s.spawn(); // .ready
+
+    // Unblocking a ready thread should not change it
+    s.unblock(id);
+    try testing.expectEqual(ThreadState.ready, s.threads[id].state);
+
+    // Unblocking a free slot should not crash
+    s.unblock(5);
+    try testing.expectEqual(ThreadState.free, s.threads[5].state);
+}

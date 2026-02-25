@@ -215,6 +215,22 @@ test "notify with out-of-range supervisor_ep is silent" {
     sched.global.reap(id);
 }
 
+test "fault reason cap_violation serializes correctly" {
+    var ep = ipc.Endpoint{};
+    notifyEndpoint(&ep, .cap_violation, 42, 0xCAFE_BAD0, 0x9600_0004);
+
+    const received = ep.recv(FAULT_TAG).?;
+    var copy: FaultMsg = undefined;
+    const dst: [*]u8 = @ptrCast(&copy);
+    for (0..@sizeOf(FaultMsg)) |i| {
+        dst[i] = received.payload[i];
+    }
+    try testing.expectEqual(@as(u8, @intFromEnum(Reason.cap_violation)), copy.reason);
+    try testing.expectEqual(@as(u32, 42), copy.thread_id);
+    try testing.expectEqual(@as(u64, 0xCAFE_BAD0), copy.fault_addr);
+    try testing.expectEqual(@as(u64, 0x9600_0004), copy.esr);
+}
+
 test "notify skips thread with no supervisor" {
     sched.global = .{};
 
