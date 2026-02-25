@@ -166,3 +166,13 @@ pub fn epGrant(ep_cap: u32, thread_cap: u32) i64 {
         : .{ .memory = true }
     );
 }
+
+pub fn supervisorSet(thread_cap: u32, ep_cap: u32) i64 {
+    return asm volatile ("svc #0"
+        : [ret] "={x0}" (-> i64),
+        : [x0] "{x0}" (@as(u64, thread_cap)),
+          [x1] "{x1}" (@as(u64, ep_cap)),
+          [x8] "{x8}" (@as(u64, 16)),
+        : .{ .memory = true }
+    );
+}

@@ -26,8 +26,9 @@ pub fn build(b: *std.Build) void {
     const cap = b.createModule(.{ .root_source_file = b.path("kernel/src/cap.zig"), .target = opts.target, .optimize = opts.optimize });
     const ipc = b.createModule(.{ .root_source_file = b.path("kernel/src/ipc.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{.{ .name = "cap", .module = cap }} });
     const sched = b.createModule(.{ .root_source_file = b.path("kernel/src/sched.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "cap", .module = cap }, .{ .name = "ipc", .module = ipc } } });
-    const syscall = b.createModule(.{ .root_source_file = b.path("kernel/src/syscall.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "sched", .module = sched }, .{ .name = "cap", .module = cap }, .{ .name = "uart", .module = uart }, .{ .name = "frame", .module = frame }, .{ .name = "ipc", .module = ipc } } });
-    const exception = b.createModule(.{ .root_source_file = b.path("kernel/arch/aarch64/exception.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "uart", .module = uart }, .{ .name = "syscall", .module = syscall }, .{ .name = "sched", .module = sched } } });
+    const fault = b.createModule(.{ .root_source_file = b.path("kernel/src/fault.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "ipc", .module = ipc }, .{ .name = "cap", .module = cap }, .{ .name = "sched", .module = sched } } });
+    const syscall = b.createModule(.{ .root_source_file = b.path("kernel/src/syscall.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "sched", .module = sched }, .{ .name = "cap", .module = cap }, .{ .name = "uart", .module = uart }, .{ .name = "frame", .module = frame }, .{ .name = "ipc", .module = ipc }, .{ .name = "fault", .module = fault } } });
+    const exception = b.createModule(.{ .root_source_file = b.path("kernel/arch/aarch64/exception.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "uart", .module = uart }, .{ .name = "syscall", .module = syscall }, .{ .name = "sched", .module = sched }, .{ .name = "fault", .module = fault } } });
 
     // ── User-space LibOS + init program ──────────────────────────────
 
@@ -148,4 +149,14 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(frame_tests).step);
+
+    const host_sched = b.createModule(.{ .root_source_file = b.path("kernel/src/sched.zig"), .target = b.graph.host, .imports = &.{ .{ .name = "cap", .module = host_cap }, .{ .name = "ipc", .module = host_ipc } } });
+    const fault_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("kernel/src/fault.zig"),
+            .target = b.graph.host,
+            .imports = &.{ .{ .name = "ipc", .module = host_ipc }, .{ .name = "cap", .module = host_cap }, .{ .name = "sched", .module = host_sched } },
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(fault_tests).step);
 }

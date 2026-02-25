@@ -19,6 +19,7 @@ const cap = @import("cap");
 const uart = @import("uart");
 const frame_mod = @import("frame");
 const ipc = @import("ipc");
+const fault_mod = @import("fault");
 
 // ─── Syscall Numbers ───────────────────────────────────────────────
 
@@ -38,6 +39,7 @@ pub const SYS_THREAD_CREATE = 12;
 pub const SYS_THREAD_GRANT = 13;
 pub const SYS_IPC_SEND_WITH_TAG = 14;
 pub const SYS_EP_GRANT = 15;
+pub const SYS_SUPERVISOR_SET = 16;
 
 // ─── Error codes (returned in x0) ──────────────────────────────────
 
@@ -76,6 +78,7 @@ pub fn dispatch(thread_id: sched.ThreadId, frame: [*]u64) void {
         SYS_THREAD_GRANT => sysThreadGrant(thread_id, @truncate(arg0), @truncate(arg1)),
         SYS_IPC_SEND_WITH_TAG => sysIpcSend(thread_id, @truncate(arg0), arg1, arg2, arg3),
         SYS_EP_GRANT => sysEpGrant(thread_id, @truncate(arg0), @truncate(arg1)),
+        SYS_SUPERVISOR_SET => sysSupervisorSet(thread_id, @truncate(arg0), @truncate(arg1)),
         else => E_BADSYS,
     };
 
@@ -123,6 +126,7 @@ fn sysWrite(thread_id: sched.ThreadId, cap_idx: cap.CapIndex, buf_ptr: u64, buf_
 }
 
 fn sysExit(thread_id: sched.ThreadId) u64 {
+    fault_mod.notify(thread_id, .exit, 0, 0);
     uart.puts("[kernel] thread ");
     putDec(thread_id);
     uart.puts(" exited via syscall\n");
@@ -339,6 +343,30 @@ fn sysThreadGrant(thread_id: sched.ThreadId, thread_cap_idx: cap.CapIndex, cap_i
     _ = target_table.create(src_cap.cap_type, src_cap.object, src_cap.rights) catch {
         return E_FULL;
     };
+
+    return E_OK;
+}
+
+// ─── Supervisor syscalls (M3.1) ──────────────────────────────────────
+
+fn sysSupervisorSet(thread_id: sched.ThreadId, thread_cap_idx: cap.CapIndex, ep_cap_idx: cap.CapIndex) u64 {
+    const table = sched.getCapTable(thread_id) orelse return E_BADCAP;
+
+    // Validate thread cap with write right
+    const thread_cap = table.lookup(thread_cap_idx) orelse return E_BADCAP;
+    if (thread_cap.cap_type != .thread) return E_BADCAP;
+    if (!thread_cap.rights.write) return E_BADCAP;
+
+    // Validate endpoint cap with write right
+    const ep_cap = table.lookup(ep_cap_idx) orelse return E_BADCAP;
+    if (ep_cap.cap_type != .ipc_endpoint) return E_BADCAP;
+    if (!ep_cap.rights.write) return E_BADCAP;
+
+    const target_id: sched.ThreadId = @intCast(thread_cap.object);
+    const target_thread = sched.global.getThread(target_id) orelse return E_BADCAP;
+
+    // Store the endpoint index so kill() can deliver the fault notification
+    target_thread.supervisor_ep = @intCast(ep_cap.object);
 
     return E_OK;
 }

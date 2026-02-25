@@ -7,6 +7,7 @@
 const uart = @import("uart");
 const syscall = @import("syscall");
 const sched = @import("sched");
+const fault_mod = @import("fault");
 
 const ExceptionSource = enum(u8) {
     // Current EL, SP_EL0
@@ -214,6 +215,14 @@ export fn exception_handler(type_id: u64, frame: [*]u64) callconv(.{ .aarch64_aa
     uart.puts("  x30 (LR): 0x");
     putHex64(frame[28]);
     uart.puts("\n");
+
+    // If exception came from EL0 (user space), notify supervisor before halting
+    if (type_id >= 8 and type_id <= 11 and sched.global.has_current) {
+        const cur_id = sched.global.current;
+        fault_mod.notify(cur_id, .exception, far, esr);
+        sched.global.kill(cur_id);
+        sched.global.reap(cur_id);
+    }
 
     // All other exceptions are fatal for now — halt
     uart.puts("\n  HALTED\n");
