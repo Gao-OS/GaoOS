@@ -7,6 +7,7 @@ const exception = @import("exception");
 const timer = @import("timer");
 const sched = @import("sched");
 const cap = @import("cap");
+const user_init = @import("user_init");
 
 /// Enable interrupts (clear DAIF.I bit to unmask IRQs).
 fn enableIRQ() void {
@@ -33,14 +34,13 @@ fn timerTick() void {
     }
 }
 
-/// User memory layout (all in 2MB block 1: 0x200000-0x3FFFFF):
-///   0x200000: user program code (copied from kernel image)
-///   0x201000: user stack top (grows down from here)
+/// User memory layout:
+///   Block 1 (0x200000-0x3FFFFF): user program + stack
+///   Blocks 2-31 (0x400000-0x3FFFFFF): frame allocator pool (EL0-accessible)
 const USER_CODE_BASE: u64 = 0x200000;
-const USER_STACK_TOP: u64 = 0x201000;
+const USER_STACK_TOP: u64 = 0x400000; // Top of 2MB block, SP decrements before use
 
 /// Patch a single L2 page table entry to allow EL0 data access (AP[1]=1).
-/// Uses per-VA TLB invalidation to avoid disturbing other TLB entries.
 fn enableEL0AccessForBlock(block_index: usize) void {
     const l2_base: [*]volatile u64 = @ptrFromInt(0x71000);
     l2_base[block_index] |= (1 << 6); // AP[1] = 1 → EL0 RW
@@ -55,25 +55,18 @@ fn enableEL0AccessForBlock(block_index: usize) void {
     asm volatile ("isb");
 }
 
-/// Copy the user program to EL0-accessible memory (block 1).
-/// The program is position-independent (uses only movz/movk + PC-relative branches).
+/// Copy the embedded user binary to EL0-accessible memory.
 fn copyUserProgram() u64 {
-    const start = @intFromPtr(&user_program_start);
-    const end = @intFromPtr(&user_program_end);
-    const size = end - start;
-
-    const src: [*]const u8 = @ptrFromInt(start);
+    const data = user_init.data;
     const dst: [*]u8 = @ptrFromInt(USER_CODE_BASE);
 
-    for (0..size) |i| {
-        dst[i] = src[i];
+    for (data, 0..) |byte, i| {
+        dst[i] = byte;
     }
 
     // Ensure instruction cache sees the new code
-    // DC CVAU: clean data cache to point of unification
-    // IC IVAU: invalidate instruction cache
     var addr: u64 = USER_CODE_BASE;
-    while (addr < USER_CODE_BASE + size) : (addr += 64) {
+    while (addr < USER_CODE_BASE + data.len) : (addr += 64) {
         asm volatile ("dc cvau, %[addr]"
             :
             : [addr] "r" (addr),
@@ -81,7 +74,7 @@ fn copyUserProgram() u64 {
     }
     asm volatile ("dsb ish");
     addr = USER_CODE_BASE;
-    while (addr < USER_CODE_BASE + size) : (addr += 64) {
+    while (addr < USER_CODE_BASE + data.len) : (addr += 64) {
         asm volatile ("ic ivau, %[addr]"
             :
             : [addr] "r" (addr),
@@ -95,12 +88,10 @@ fn copyUserProgram() u64 {
 
 /// External symbols
 extern fn enter_el0(entry: u64, user_sp: u64) noreturn;
-extern const user_program_start: u8;
-extern const user_program_end: u8;
 
 export fn kernel_main() callconv(.{ .aarch64_aapcs = .{} }) noreturn {
     uart.init();
-    uart.puts("GaoOS v0.1\n");
+    uart.puts("GaoOS v0.2\n");
 
     exception.init();
     uart.puts("MMU enabled (identity map from boot.S).\n");
@@ -136,20 +127,25 @@ export fn kernel_main() callconv(.{ .aarch64_aapcs = .{} }) noreturn {
     enableIRQ();
 
     // ─── Enter user space ──────────────────────────────────────────
-    // 1. Enable EL0 access for block 1 (0x200000-0x3FFFFF)
     uart.puts("Setting up user space...\n");
-    enableEL0AccessForBlock(1);
 
-    // 2. Copy user program to block 1
+    // Enable EL0 access for blocks 1-31 (user program, stack, frame pool)
+    for (1..32) |block| {
+        enableEL0AccessForBlock(block);
+    }
+
+    // Copy embedded user binary to block 1
     const entry = copyUserProgram();
     uart.puts("  User program at 0x");
     putHex(entry);
-    uart.puts("\n");
+    uart.puts(" (");
+    putDec(@intCast(user_init.data.len));
+    uart.puts(" bytes)\n");
 
     uart.puts("\nDropping to EL0 → user init\n");
     uart.puts("─────────────────────────────────\n");
 
-    // 3. Enter EL0
+    // Enter EL0
     enter_el0(entry, USER_STACK_TOP);
 }
 

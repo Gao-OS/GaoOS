@@ -29,7 +29,43 @@ pub fn build(b: *std.Build) void {
     const syscall = b.createModule(.{ .root_source_file = b.path("kernel/src/syscall.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "sched", .module = sched }, .{ .name = "cap", .module = cap }, .{ .name = "uart", .module = uart }, .{ .name = "frame", .module = frame } } });
     const exception = b.createModule(.{ .root_source_file = b.path("kernel/arch/aarch64/exception.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "uart", .module = uart }, .{ .name = "syscall", .module = syscall }, .{ .name = "sched", .module = sched } } });
 
-    // Kernel executable
+    // ── User-space LibOS + init program ──────────────────────────────
+
+    const libos = b.createModule(.{
+        .root_source_file = b.path("libos/lib.zig"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+    });
+
+    const user_init_exe = b.addExecutable(.{
+        .name = "user_init",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("user/init/main.zig"),
+            .target = opts.target,
+            .optimize = opts.optimize,
+            .imports = &.{.{ .name = "libos", .module = libos }},
+        }),
+    });
+    user_init_exe.setLinkerScript(b.path("user/linker.ld"));
+    user_init_exe.addAssemblyFile(b.path("libos/entry.S"));
+
+    const user_raw = user_init_exe.addObjCopy(.{ .format = .bin });
+
+    // Embed user binary into kernel via generated module
+    const wf = b.addWriteFiles();
+    _ = wf.addCopyFile(user_raw.getOutput(), "user_init.bin");
+    const embed_src = wf.add("user_init_embed.zig",
+        \\pub const data = @embedFile("user_init.bin");
+    );
+
+    const user_embed = b.createModule(.{
+        .root_source_file = embed_src,
+        .target = opts.target,
+        .optimize = opts.optimize,
+    });
+
+    // ── Kernel executable ────────────────────────────────────────────
+
     const kernel = b.addExecutable(.{
         .name = "kernel8",
         .root_module = b.createModule(.{
@@ -44,6 +80,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "sched", .module = sched },
                 .{ .name = "timer", .module = timer },
                 .{ .name = "frame", .module = frame },
+                .{ .name = "user_init", .module = user_embed },
             },
         }),
     });
@@ -60,6 +97,10 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&install_raw.step);
     b.installArtifact(kernel);
 
+    // Also install user binary for inspection
+    const install_user = b.addInstallBinFile(user_raw.getOutput(), "user_init.bin");
+    b.getInstallStep().dependOn(&install_user.step);
+
     // Run in QEMU
     const run_step = b.step("run", "Boot kernel in QEMU raspi3b");
     const run_cmd = b.addSystemCommand(&.{ "qemu-system-aarch64", "-M", "raspi3b", "-kernel" });
@@ -68,7 +109,8 @@ pub fn build(b: *std.Build) void {
     run_cmd.step.dependOn(b.getInstallStep());
     run_step.dependOn(&run_cmd.step);
 
-    // Host-target unit tests (cap, mmu data structures, etc.)
+    // ── Host-target unit tests ───────────────────────────────────────
+
     const test_step = b.step("test", "Run kernel unit tests on host");
 
     const cap_tests = b.addTest(.{
