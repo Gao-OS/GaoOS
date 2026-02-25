@@ -36,7 +36,6 @@ const WORKER_A_EP_CAP: u32 = 1; // Worker A's cap pointing to orchestrator's end
 
 const CAP_NULL: u32 = 0xFFFFFFFF;
 const TAG_ANY: u64 = 0;
-const MAX_ITERATIONS: u32 = 500;
 const TOTAL_WORKERS: u32 = 3;
 
 // ─── Worker A ────────────────────────────────────────────────────────
@@ -171,23 +170,18 @@ export fn user_main() void {
 
     io.println(UART_CAP, "Workers spawned. Waiting for messages...");
 
-    // ── Drain endpoint: cap message + 2 fault notifications ──────────
+    // ── Drain endpoint: cap message + fault notifications ──────────
+    // Uses blocking receive — the thread sleeps until a message arrives,
+    // eliminating the need for a poll+yield loop with timeout.
     var buf: [256]u8 = undefined;
     var fault_count: u32 = 0;
     var got_frame = false;
-    var iterations: u32 = 0;
 
     while (fault_count < TOTAL_WORKERS) {
-        if (iterations >= MAX_ITERATIONS) {
-            io.println(UART_CAP, "Orchestrator: timeout!");
-            break;
-        }
-        iterations += 1;
-
-        const rcap = sys.ipcRecvCap(ORCH_EP_CAP, &buf, TAG_ANY);
+        const rcap = sys.ipcRecvCapBlock(ORCH_EP_CAP, &buf, TAG_ANY);
         if (rcap.payload_len < 0) {
-            sys.yield();
-            continue;
+            io.println(UART_CAP, "Orchestrator: recv error!");
+            break;
         }
 
         const len: usize = @intCast(@as(u64, @bitCast(rcap.payload_len)));
