@@ -216,15 +216,42 @@ export fn exception_handler(type_id: u64, frame: [*]u64) callconv(.{ .aarch64_aa
     putHex64(frame[28]);
     uart.puts("\n");
 
-    // If exception came from EL0 (user space), notify supervisor before halting
+    // If exception came from EL0 (user space), notify supervisor, kill the
+    // thread, and reschedule — the rest of the system keeps running.
+    // Do NOT reap here: the supervisor may inspect the dead thread later.
     if (type_id >= 8 and type_id <= 11 and sched.global.has_current) {
         const cur_id = sched.global.current;
         fault_mod.notify(cur_id, .exception, far, esr);
         sched.global.kill(cur_id);
-        sched.global.reap(cur_id);
+
+        // Reschedule: pick the next ready thread and context-switch to it
+        if (sched.global.schedule()) |next| {
+            const saved_elr = asm ("mrs %[ret], elr_el1"
+                : [ret] "=r" (-> u64),
+            );
+            const saved_spsr = asm ("mrs %[ret], spsr_el1"
+                : [ret] "=r" (-> u64),
+            );
+            context_switch(&sched.global.threads[cur_id].context, &next.context);
+            asm volatile ("msr elr_el1, %[v]"
+                :
+                : [v] "r" (saved_elr),
+            );
+            asm volatile ("msr spsr_el1, %[v]"
+                :
+                : [v] "r" (saved_spsr),
+            );
+        } else {
+            // No runnable threads remain — halt
+            uart.puts("\n  No runnable threads — HALTED\n");
+            while (true) {
+                asm volatile ("wfe");
+            }
+        }
+        return;
     }
 
-    // All other exceptions are fatal for now — halt
+    // EL1 exceptions are unrecoverable — halt
     uart.puts("\n  HALTED\n");
     while (true) {
         asm volatile ("wfe");

@@ -64,6 +64,14 @@ const E_AGAIN: u64 = @bitCast(@as(i64, -7));
 const USER_MEM_START: u64 = 0x200000;
 const USER_MEM_END: u64 = 0x3FFFFFF;
 
+/// Safely convert a capability object field to a ThreadId.
+/// Returns null if the value is out of range, preventing @intCast panics
+/// and ensuring the ID is within the thread/endpoint table bounds.
+fn capObjectToId(object: usize) ?sched.ThreadId {
+    if (object >= sched.MAX_THREADS) return null;
+    return @intCast(object);
+}
+
 fn isValidUserRange(ptr: u64, len: u64) bool {
     if (len == 0) return true;
     if (ptr < USER_MEM_START) return false;
@@ -228,7 +236,7 @@ fn sysIpcSend(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u64,
     if (c.cap_type != .ipc_endpoint) return E_BADCAP;
     if (!c.rights.write) return E_BADCAP;
 
-    const ep_idx: sched.ThreadId = @intCast(c.object);
+    const ep_idx = capObjectToId(c.object) orelse return E_BADCAP;
     const ep = sched.getEndpoint(ep_idx) orelse return E_BADCAP;
 
     const len: u32 = @intCast(@min(msg_len, ipc.MAX_PAYLOAD));
@@ -272,7 +280,10 @@ fn sysIpcRecv(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex
         return E_BADCAP;
     }
 
-    const ep_idx: sched.ThreadId = @intCast(c.object);
+    const ep_idx = capObjectToId(c.object) orelse {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    };
     const ep = sched.getEndpoint(ep_idx) orelse {
         frame[31] = E_BADCAP;
         return E_BADCAP;
@@ -325,7 +336,7 @@ fn sysEpGrant(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, thread_cap_id
     const thread_cap = table.lookup(thread_cap_idx) orelse return E_BADCAP;
     if (thread_cap.cap_type != .thread) return E_BADCAP;
 
-    const target_id: sched.ThreadId = @intCast(thread_cap.object);
+    const target_id = capObjectToId(thread_cap.object) orelse return E_BADCAP;
     const target_table = sched.getCapTable(target_id) orelse return E_BADCAP;
 
     // Create read-only endpoint cap in target's table
@@ -370,7 +381,7 @@ fn sysThreadGrant(thread_id: sched.ThreadId, thread_cap_idx: cap.CapIndex, cap_i
     const src_cap = table.lookup(cap_idx) orelse return E_BADCAP;
     if (!src_cap.rights.grant) return E_BADCAP;
 
-    const target_id: sched.ThreadId = @intCast(thread_cap.object);
+    const target_id = capObjectToId(thread_cap.object) orelse return E_BADCAP;
     const target_table = sched.getCapTable(target_id) orelse return E_BADCAP;
 
     // Copy capability to target's table
@@ -396,11 +407,11 @@ fn sysSupervisorSet(thread_id: sched.ThreadId, thread_cap_idx: cap.CapIndex, ep_
     if (ep_cap.cap_type != .ipc_endpoint) return E_BADCAP;
     if (!ep_cap.rights.write) return E_BADCAP;
 
-    const target_id: sched.ThreadId = @intCast(thread_cap.object);
+    const target_id = capObjectToId(thread_cap.object) orelse return E_BADCAP;
     const target_thread = sched.global.getThread(target_id) orelse return E_BADCAP;
 
     // Store the endpoint index so kill() can deliver the fault notification
-    target_thread.supervisor_ep = @intCast(ep_cap.object);
+    target_thread.supervisor_ep = capObjectToId(ep_cap.object) orelse return E_BADCAP;
 
     return E_OK;
 }
@@ -419,7 +430,7 @@ fn sysIpcSendCap(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u
     const src_cap = sender_table.lookup(cap_to_send) orelse return E_BADCAP;
     if (!src_cap.rights.grant) return E_BADCAP;
 
-    const ep_idx: sched.ThreadId = @intCast(ep_cap_val.object);
+    const ep_idx = capObjectToId(ep_cap_val.object) orelse return E_BADCAP;
     const ep = sched.getEndpoint(ep_idx) orelse return E_BADCAP;
 
     // Receiver's cap table: endpoint[i] is owned by thread i
@@ -466,7 +477,10 @@ fn sysIpcRecvCap(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIn
         return E_BADCAP;
     }
 
-    const ep_idx: sched.ThreadId = @intCast(c.object);
+    const ep_idx = capObjectToId(c.object) orelse {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    };
     const ep = sched.getEndpoint(ep_idx) orelse {
         frame[31] = E_BADCAP;
         return E_BADCAP;
