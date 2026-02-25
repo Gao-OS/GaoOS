@@ -36,7 +36,8 @@ pub const BumpAllocator = struct {
             }
         }
 
-        // Need a new frame
+        // Need a new frame — single frame can't hold more than 4096 bytes
+        if (size > 4096) return null;
         if (self.frame_count >= MAX_FRAMES) return null;
 
         const cap_result = sys.frameAlloc();
