@@ -79,6 +79,9 @@ pub fn setTimerHandler(handler: *const fn () void) void {
     timer_handler = handler;
 }
 
+/// Assembly context switch (defined in context_switch.S).
+extern fn context_switch(old: *sched.Context, new: *sched.Context) void;
+
 /// Called from vectors.S for all 16 exception vectors.
 /// type_id: 0-15 identifying which vector fired
 /// frame: pointer to saved register context on stack
@@ -95,8 +98,18 @@ export fn exception_handler(type_id: u64, frame: [*]u64) callconv(.{ .aarch64_aa
         if (source & (1 << 3) != 0) {
             if (timer_handler) |handler| {
                 handler();
-                return;
             }
+
+            // Preemptive context switch: pick next ready thread
+            if (sched.global.has_current) {
+                const old_id = sched.global.current;
+                if (sched.global.schedule()) |next| {
+                    if (next.id != old_id) {
+                        context_switch(&sched.global.threads[old_id].context, &next.context);
+                    }
+                }
+            }
+            return;
         }
 
         // Unknown IRQ — fall through to diagnostic handler
@@ -111,7 +124,37 @@ export fn exception_handler(type_id: u64, frame: [*]u64) callconv(.{ .aarch64_aa
     // Fast path: SVC from lower EL (user-space syscall)
     if (ec == 0x15 and type_id == 8) {
         if (sched.global.has_current) {
+            const syscall_num = frame[6]; // x8
             syscall.dispatch(sched.global.current, frame);
+
+            // Yield and exit trigger an immediate reschedule
+            if (syscall_num == syscall.SYS_YIELD or syscall_num == syscall.SYS_EXIT) {
+                const old_id = sched.global.current;
+                if (sched.global.schedule()) |next| {
+                    if (next.id != old_id) {
+                        // Save/restore ELR and SPSR across context switch.
+                        // Each thread's exception frame is on its own kernel stack,
+                        // but the hardware ELR/SPSR registers are shared — we must
+                        // preserve them so vectors.S restores the correct values.
+                        const saved_elr = asm ("mrs %[ret], elr_el1"
+                            : [ret] "=r" (-> u64),
+                        );
+                        const saved_spsr = asm ("mrs %[ret], spsr_el1"
+                            : [ret] "=r" (-> u64),
+                        );
+                        context_switch(&sched.global.threads[old_id].context, &next.context);
+                        // Resumed — restore our ELR/SPSR
+                        asm volatile ("msr elr_el1, %[v]"
+                            :
+                            : [v] "r" (saved_elr),
+                        );
+                        asm volatile ("msr spsr_el1, %[v]"
+                            :
+                            : [v] "r" (saved_spsr),
+                        );
+                    }
+                }
+            }
         }
         return;
     }

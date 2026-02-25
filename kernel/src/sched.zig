@@ -55,7 +55,11 @@ pub const Thread = struct {
     context: Context = .{},
     stack_base: usize = 0,
     supervisor: ThreadId = 0,
+    supervisor_ep: u32 = 0xFFFFFFFF, // Endpoint index for fault notifications (0xFFFFFFFF = none)
 };
+
+/// Per-thread kernel stacks for context switching.
+var kernel_stacks: [MAX_THREADS][KERNEL_STACK_SIZE]u8 align(16) = @splat([_]u8{0} ** KERNEL_STACK_SIZE);
 
 /// Per-thread capability tables — separate global for alignment.
 var cap_tables: [MAX_THREADS]cap.CapabilityTable align(16) = @splat(cap.CapabilityTable{});
@@ -120,6 +124,24 @@ pub const Scheduler = struct {
             }
         }
         return error.ThreadTableFull;
+    }
+
+    /// Spawn a new thread with a specific EL0 entry point and user stack.
+    /// The trampoline_addr is the address of the assembly trampoline that
+    /// sets up EL0 and does eret. The new thread's callee-saved registers
+    /// carry: x19 = entry_pc, x20 = stack_ptr, x30 = trampoline.
+    pub fn spawnAt(self: *Scheduler, entry_pc: u64, stack_ptr: u64, trampoline_addr: u64) error{ThreadTableFull}!ThreadId {
+        const id = try self.spawn();
+        const thread = &self.threads[id];
+
+        thread.context.x19 = entry_pc;
+        thread.context.x20 = stack_ptr;
+        thread.context.x30 = trampoline_addr;
+        // Kernel stack for this thread (top = base + size, grows down)
+        thread.stack_base = @intFromPtr(&kernel_stacks[id]) + KERNEL_STACK_SIZE;
+        thread.context.sp = thread.stack_base;
+
+        return id;
     }
 
     pub fn getThread(self: *Scheduler, id: ThreadId) ?*Thread {

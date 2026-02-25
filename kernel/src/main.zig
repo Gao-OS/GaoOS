@@ -113,7 +113,7 @@ export fn kernel_main() callconv(.{ .aarch64_aapcs = .{} }) noreturn {
         uart.puts("FATAL: no cap table for thread 0\n");
         halt();
     };
-    _ = ct.create(.device, 0x3F20_1000, cap.Rights{ .write = true }) catch {
+    _ = ct.create(.device, 0x3F20_1000, cap.Rights{ .write = true, .grant = true }) catch {
         uart.puts("FATAL: failed to create UART cap\n");
         halt();
     };

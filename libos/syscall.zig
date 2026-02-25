@@ -83,3 +83,86 @@ pub fn framePhys(cap_idx: u32) i64 {
         : .{ .memory = true }
     );
 }
+
+// ─── IPC syscalls ────────────────────────────────────────────────
+
+pub fn ipcSend(ep_cap: u32, buf: [*]const u8, len: usize) i64 {
+    return asm volatile ("svc #0"
+        : [ret] "={x0}" (-> i64),
+        : [x0] "{x0}" (@as(u64, ep_cap)),
+          [x1] "{x1}" (@intFromPtr(buf)),
+          [x2] "{x2}" (@as(u64, len)),
+          [x8] "{x8}" (@as(u64, 9)),
+        : .{ .memory = true }
+    );
+}
+
+pub const RecvResult = struct {
+    payload_len: i64,
+    tag: u64,
+};
+
+pub fn ipcRecv(ep_cap: u32, buf: [*]u8, tag_filter: u64) RecvResult {
+    var len: i64 = undefined;
+    var tag: u64 = undefined;
+    asm volatile ("svc #0"
+        : [x0] "={x0}" (len),
+          [x1] "={x1}" (tag),
+        : [arg0] "{x0}" (@as(u64, ep_cap)),
+          [arg1] "{x1}" (@intFromPtr(buf)),
+          [arg2] "{x2}" (tag_filter),
+          [x8] "{x8}" (@as(u64, 10)),
+        : .{ .memory = true }
+    );
+    return .{ .payload_len = len, .tag = tag };
+}
+
+pub fn epCreate() i64 {
+    return asm volatile ("svc #0"
+        : [ret] "={x0}" (-> i64),
+        : [x8] "{x8}" (@as(u64, 11)),
+        : .{ .memory = true }
+    );
+}
+
+pub fn threadCreate(entry_pc: u64, stack_ptr: u64) i64 {
+    return asm volatile ("svc #0"
+        : [ret] "={x0}" (-> i64),
+        : [x0] "{x0}" (entry_pc),
+          [x1] "{x1}" (stack_ptr),
+          [x8] "{x8}" (@as(u64, 12)),
+        : .{ .memory = true }
+    );
+}
+
+pub fn threadGrant(thread_cap: u32, cap_idx: u32) i64 {
+    return asm volatile ("svc #0"
+        : [ret] "={x0}" (-> i64),
+        : [x0] "{x0}" (@as(u64, thread_cap)),
+          [x1] "{x1}" (@as(u64, cap_idx)),
+          [x8] "{x8}" (@as(u64, 13)),
+        : .{ .memory = true }
+    );
+}
+
+pub fn ipcSendWithTag(ep_cap: u32, buf: [*]const u8, len: usize, tag: u64) i64 {
+    return asm volatile ("svc #0"
+        : [ret] "={x0}" (-> i64),
+        : [x0] "{x0}" (@as(u64, ep_cap)),
+          [x1] "{x1}" (@intFromPtr(buf)),
+          [x2] "{x2}" (@as(u64, len)),
+          [x3] "{x3}" (tag),
+          [x8] "{x8}" (@as(u64, 14)),
+        : .{ .memory = true }
+    );
+}
+
+pub fn epGrant(ep_cap: u32, thread_cap: u32) i64 {
+    return asm volatile ("svc #0"
+        : [ret] "={x0}" (-> i64),
+        : [x0] "{x0}" (@as(u64, ep_cap)),
+          [x1] "{x1}" (@as(u64, thread_cap)),
+          [x8] "{x8}" (@as(u64, 15)),
+        : .{ .memory = true }
+    );
+}
