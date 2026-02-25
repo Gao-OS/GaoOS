@@ -1675,6 +1675,25 @@ test "sysIpcRecv returns E_BADARG for out-of-user-range buf_ptr" {
     try testing.expectEqual(E_BADARG, result);
 }
 
+test "sysIpcSend returns E_BADARG for kernel-space msg_ptr" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    // msg_ptr=0x80000 is kernel space, len=1 — pointer validation rejects it
+    try testing.expectEqual(E_BADARG, sysIpcSend(tid, ep_cap, 0x80000, 1, 0));
+}
+
+test "sysIpcRecvBlock returns E_BADARG for kernel-space buf_ptr" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    // Pre-enqueue so the recv doesn't block; validation happens before dequeue
+    _ = sysIpcSend(tid, ep_cap, 0, 0, 1);
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvBlock(tid, &frame_buf, ep_cap, 0x80000, 0);
+    try testing.expectEqual(E_BADARG, result);
+}
+
 test "sysEpCreate returns E_FULL when cap table is full" {
     const tid = testSetup();
     defer testTeardown();
