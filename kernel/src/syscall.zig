@@ -1296,6 +1296,39 @@ test "sysIpcSend returns E_CLOSED on closed endpoint" {
     try testing.expectEqual(E_CLOSED, sysIpcSend(tid, ep_cap, 0, 0, 0));
 }
 
+test "sysIpcRecv with tag filter skips non-matching" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Send two messages with different tags
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 10));
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 20));
+
+    // Receive with tag_filter=20 — should skip tag=10, return tag=20
+    var frame_buf: [34]u64 = undefined;
+    _ = sysIpcRecv(tid, &frame_buf, ep_cap, 0, 20);
+    try testing.expectEqual(@as(u64, 20), frame_buf[32]);
+
+    // Now receive with tag_filter=0 (any) — should get the remaining tag=10
+    _ = sysIpcRecv(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(@as(u64, 10), frame_buf[32]);
+}
+
+test "sysEpCreate returns same endpoint on second call" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep1: cap.CapIndex = @intCast(sysEpCreate(tid));
+    const ep2: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Both caps should be distinct slots but point to the same endpoint
+    try testing.expect(ep1 != ep2);
+    const table = sched.getCapTable(tid).?;
+    const c1 = table.lookup(ep1).?;
+    const c2 = table.lookup(ep2).?;
+    try testing.expectEqual(c1.object, c2.object); // same endpoint ID
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');

@@ -420,3 +420,29 @@ test "mapPage reuses existing intermediate tables" {
     // No new tables should be allocated (same L1, L2, L3)
     try testing.expectEqual(after_first, pool.next);
 }
+
+test "freeFrame ignores out-of-bounds address" {
+    var fa = try initFrameAllocator(testing.allocator, 64 * PAGE_SIZE, 0);
+    defer testing.allocator.free(fa.bitmap);
+
+    const a0 = try fa.allocFrame();
+    _ = a0;
+    try testing.expectEqual(@as(usize, 1), fa.used);
+
+    // Free an address way past the end — should be silently ignored
+    fa.freeFrame(99999 * PAGE_SIZE);
+    try testing.expectEqual(@as(usize, 1), fa.used);
+}
+
+test "freeFrame double-free is silent" {
+    var fa = try initFrameAllocator(testing.allocator, 64 * PAGE_SIZE, 0);
+    defer testing.allocator.free(fa.bitmap);
+
+    const a0 = try fa.allocFrame();
+    fa.freeFrame(a0);
+    try testing.expectEqual(@as(usize, 0), fa.used);
+
+    // Double-free — should be silently ignored (not underflow)
+    fa.freeFrame(a0);
+    try testing.expectEqual(@as(usize, 0), fa.used);
+}

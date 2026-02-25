@@ -515,3 +515,26 @@ test "per-thread cap table and endpoint" {
     ct.delete(cap_idx);
     _ = ep.recv(ipc.TAG_ANY);
 }
+
+test "wakeBlockedRecv wakes only one of multiple waiters" {
+    var s = Scheduler{};
+    const t0 = try s.spawn();
+    const t1 = try s.spawn();
+    const target_ep: ThreadId = 5; // arbitrary endpoint ID
+
+    // Make both threads running then block both on the same endpoint
+    _ = s.schedule(); // t0 running
+    s.threads[t0].blocked_ep = target_ep;
+    s.blockCurrent();
+    _ = s.schedule(); // t1 running
+    s.threads[t1].blocked_ep = target_ep;
+    s.blockCurrent();
+
+    try testing.expectEqual(ThreadState.blocked, s.threads[t0].state);
+    try testing.expectEqual(ThreadState.blocked, s.threads[t1].state);
+
+    // Wake — only the first should be unblocked
+    s.wakeBlockedRecv(target_ep);
+    try testing.expectEqual(ThreadState.ready, s.threads[t0].state);
+    try testing.expectEqual(ThreadState.blocked, s.threads[t1].state);
+}
