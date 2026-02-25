@@ -145,8 +145,12 @@ pub fn dispatch(thread_id: sched.ThreadId, frame: [*]u64) void {
 const platform = if (is_test) struct {
     // Stubs for host testing — never actually called/entered
     var idle_loop_stub: u8 = 0;
-    fn idleLoopAddr() usize { return @intFromPtr(&idle_loop_stub); }
-    fn trampolineAddr() u64 { return 0; }
+    fn idleLoopAddr() usize {
+        return @intFromPtr(&idle_loop_stub);
+    }
+    fn trampolineAddr() u64 {
+        return 0;
+    }
 } else struct {
     // Real symbols linked from assembly files
     export fn idle_loop() callconv(.{ .aarch64_aapcs = .{} }) noreturn {
@@ -156,8 +160,12 @@ const platform = if (is_test) struct {
         }
     }
     extern const thread_entry_trampoline: u8;
-    fn idleLoopAddr() usize { return @intFromPtr(&idle_loop); }
-    fn trampolineAddr() u64 { return @intFromPtr(&thread_entry_trampoline); }
+    fn idleLoopAddr() usize {
+        return @intFromPtr(&idle_loop);
+    }
+    fn trampolineAddr() u64 {
+        return @intFromPtr(&thread_entry_trampoline);
+    }
 };
 
 // ─── Phase 1 syscalls ────────────────────────────────────────────────

@@ -21,15 +21,15 @@ pub const VirtAddr = u64;
 
 /// Page table entry: bits [51:12] = PA, bits [11:0] = attributes.
 pub const PageTableEntry = packed struct {
-    valid: u1,           // Bit 0: Entry valid
-    type_table: u1,      // Bit 1: 0 = block/page, 1 = table
-    attr_index: u3,      // Bits [4:2]: MAIR index
-    ns: u1,              // Bit 5: Non-secure
-    ap: u2,              // Bits [7:6]: Access perms (0=none, 1=EL1 only, 2=RW any, 3=RO any)
-    sh: u2,              // Bits [9:8]: Shareability
-    af: u1,              // Bit 10: Access flag
-    ng: u1,              // Bit 11: Not global
-    output_pa: u52,      // Bits [63:12]: Physical address / next table
+    valid: u1, // Bit 0: Entry valid
+    type_table: u1, // Bit 1: 0 = block/page, 1 = table
+    attr_index: u3, // Bits [4:2]: MAIR index
+    ns: u1, // Bit 5: Non-secure
+    ap: u2, // Bits [7:6]: Access perms (0=none, 1=EL1 only, 2=RW any, 3=RO any)
+    sh: u2, // Bits [9:8]: Shareability
+    af: u1, // Bit 10: Access flag
+    ng: u1, // Bit 11: Not global
+    output_pa: u52, // Bits [63:12]: Physical address / next table
 };
 
 comptime {
@@ -311,7 +311,7 @@ const TestTablePool = struct {
     }
 
     fn allocTable(ctx: *anyopaque) anyerror!PhysAddr {
-        const self: *TestTablePool = @alignCast(@ptrCast(ctx));
+        const self: *TestTablePool = @ptrCast(@alignCast(ctx));
         if (self.next >= self.tables.len) return error.OutOfMemory;
         const mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
         @memset(mem, 0);
@@ -332,11 +332,18 @@ test "mapPage creates page table hierarchy" {
     const l0_mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
     defer std.heap.page_allocator.free(l0_mem);
     @memset(l0_mem, 0);
-    const l0: *PageTable = @alignCast(@ptrCast(l0_mem.ptr));
+    const l0: *PageTable = @ptrCast(@alignCast(l0_mem.ptr));
 
     const flags = PageTableEntry{
-        .valid = 1, .type_table = 0, .attr_index = 1, .ns = 0,
-        .ap = 0, .sh = 3, .af = 1, .ng = 0, .output_pa = 0,
+        .valid = 1,
+        .type_table = 0,
+        .attr_index = 1,
+        .ns = 0,
+        .ap = 0,
+        .sh = 3,
+        .af = 1,
+        .ng = 0,
+        .output_pa = 0,
     };
 
     try mapPage(l0, 0x1000, 0x2000, pool.allocator(), flags);
@@ -370,11 +377,18 @@ test "unmapPage invalidates entry" {
     const l0_mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
     defer std.heap.page_allocator.free(l0_mem);
     @memset(l0_mem, 0);
-    const l0: *PageTable = @alignCast(@ptrCast(l0_mem.ptr));
+    const l0: *PageTable = @ptrCast(@alignCast(l0_mem.ptr));
 
     const flags = PageTableEntry{
-        .valid = 1, .type_table = 0, .attr_index = 0, .ns = 0,
-        .ap = 0, .sh = 0, .af = 1, .ng = 0, .output_pa = 0,
+        .valid = 1,
+        .type_table = 0,
+        .attr_index = 0,
+        .ns = 0,
+        .ap = 0,
+        .sh = 0,
+        .af = 1,
+        .ng = 0,
+        .output_pa = 0,
     };
 
     try mapPage(l0, 0x1000, 0x2000, pool.allocator(), flags);
@@ -392,7 +406,7 @@ test "unmapPage returns false for unmapped address" {
     const l0_mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
     defer std.heap.page_allocator.free(l0_mem);
     @memset(l0_mem, 0);
-    const l0: *PageTable = @alignCast(@ptrCast(l0_mem.ptr));
+    const l0: *PageTable = @ptrCast(@alignCast(l0_mem.ptr));
 
     // No pages mapped — should return false, not crash
     try testing.expect(!unmapPage(l0, 0x1000));
@@ -405,11 +419,18 @@ test "mapPage reuses existing intermediate tables" {
     const l0_mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
     defer std.heap.page_allocator.free(l0_mem);
     @memset(l0_mem, 0);
-    const l0: *PageTable = @alignCast(@ptrCast(l0_mem.ptr));
+    const l0: *PageTable = @ptrCast(@alignCast(l0_mem.ptr));
 
     const flags = PageTableEntry{
-        .valid = 1, .type_table = 0, .attr_index = 0, .ns = 0,
-        .ap = 0, .sh = 0, .af = 1, .ng = 0, .output_pa = 0,
+        .valid = 1,
+        .type_table = 0,
+        .attr_index = 0,
+        .ns = 0,
+        .ap = 0,
+        .sh = 0,
+        .af = 1,
+        .ng = 0,
+        .output_pa = 0,
     };
 
     // Map two pages in the same L3 table (same L0/L1/L2 path)
@@ -457,11 +478,18 @@ test "mapPage returns error when allocator exhausted" {
     const l0_mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
     defer std.heap.page_allocator.free(l0_mem);
     @memset(l0_mem, 0);
-    const l0: *PageTable = @alignCast(@ptrCast(l0_mem.ptr));
+    const l0: *PageTable = @ptrCast(@alignCast(l0_mem.ptr));
 
     const flags = PageTableEntry{
-        .valid = 1, .type_table = 0, .attr_index = 0, .ns = 0,
-        .ap = 0, .sh = 0, .af = 1, .ng = 0, .output_pa = 0,
+        .valid = 1,
+        .type_table = 0,
+        .attr_index = 0,
+        .ns = 0,
+        .ap = 0,
+        .sh = 0,
+        .af = 1,
+        .ng = 0,
+        .output_pa = 0,
     };
 
     // L0 index = (vaddr >> 39) & 0x1FF

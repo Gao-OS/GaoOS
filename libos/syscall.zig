@@ -18,16 +18,14 @@ pub fn write(cap_idx: u32, buf: [*]const u8, len: usize) i64 {
           [x1] "{x1}" (@intFromPtr(buf)),
           [x2] "{x2}" (@as(u64, len)),
           [x8] "{x8}" (@as(u64, 0)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 pub fn exit() noreturn {
     asm volatile ("svc #0"
         :
         : [x8] "{x8}" (@as(u64, 1)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
     unreachable;
 }
 
@@ -35,8 +33,7 @@ pub fn yield() void {
     asm volatile ("svc #0"
         :
         : [x8] "{x8}" (@as(u64, 2)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 pub fn capRead(cap_idx: u32) i64 {
@@ -44,16 +41,14 @@ pub fn capRead(cap_idx: u32) i64 {
         : [ret] "={x0}" (-> i64),
         : [x0] "{x0}" (@as(u64, cap_idx)),
           [x8] "{x8}" (@as(u64, 3)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 pub fn frameAlloc() i64 {
     return asm volatile ("svc #0"
         : [ret] "={x0}" (-> i64),
         : [x8] "{x8}" (@as(u64, 4)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 pub fn frameFree(cap_idx: u32) i64 {
@@ -61,8 +56,7 @@ pub fn frameFree(cap_idx: u32) i64 {
         : [ret] "={x0}" (-> i64),
         : [x0] "{x0}" (@as(u64, cap_idx)),
           [x8] "{x8}" (@as(u64, 5)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 pub fn capDerive(src: u32, rights: u8) i64 {
@@ -71,8 +65,7 @@ pub fn capDerive(src: u32, rights: u8) i64 {
         : [x0] "{x0}" (@as(u64, src)),
           [x1] "{x1}" (@as(u64, rights)),
           [x8] "{x8}" (@as(u64, 6)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 pub fn capDelete(cap_idx: u32) i64 {
@@ -80,8 +73,7 @@ pub fn capDelete(cap_idx: u32) i64 {
         : [ret] "={x0}" (-> i64),
         : [x0] "{x0}" (@as(u64, cap_idx)),
           [x8] "{x8}" (@as(u64, 7)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 pub fn framePhys(cap_idx: u32) i64 {
@@ -89,8 +81,7 @@ pub fn framePhys(cap_idx: u32) i64 {
         : [ret] "={x0}" (-> i64),
         : [x0] "{x0}" (@as(u64, cap_idx)),
           [x8] "{x8}" (@as(u64, 8)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 // ─── IPC syscalls ────────────────────────────────────────────────
@@ -102,8 +93,7 @@ pub fn ipcSend(ep_cap: u32, buf: [*]const u8, len: usize) i64 {
           [x1] "{x1}" (@intFromPtr(buf)),
           [x2] "{x2}" (@as(u64, len)),
           [x8] "{x8}" (@as(u64, 9)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 pub const RecvResult = struct {
@@ -121,8 +111,7 @@ pub fn ipcRecv(ep_cap: u32, buf: [*]u8, tag_filter: u64) RecvResult {
           [arg1] "{x1}" (@intFromPtr(buf)),
           [arg2] "{x2}" (tag_filter),
           [x8] "{x8}" (@as(u64, 10)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
     return .{ .payload_len = len, .tag = tag };
 }
 
@@ -130,8 +119,7 @@ pub fn epCreate() i64 {
     return asm volatile ("svc #0"
         : [ret] "={x0}" (-> i64),
         : [x8] "{x8}" (@as(u64, 11)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 pub fn threadCreate(entry_pc: u64, stack_ptr: u64) i64 {
@@ -140,8 +128,7 @@ pub fn threadCreate(entry_pc: u64, stack_ptr: u64) i64 {
         : [x0] "{x0}" (entry_pc),
           [x1] "{x1}" (stack_ptr),
           [x8] "{x8}" (@as(u64, 12)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 pub fn threadGrant(thread_cap: u32, cap_idx: u32) i64 {
@@ -150,8 +137,7 @@ pub fn threadGrant(thread_cap: u32, cap_idx: u32) i64 {
         : [x0] "{x0}" (@as(u64, thread_cap)),
           [x1] "{x1}" (@as(u64, cap_idx)),
           [x8] "{x8}" (@as(u64, 13)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 pub fn ipcSendWithTag(ep_cap: u32, buf: [*]const u8, len: usize, tag: u64) i64 {
@@ -162,8 +148,7 @@ pub fn ipcSendWithTag(ep_cap: u32, buf: [*]const u8, len: usize, tag: u64) i64 {
           [x2] "{x2}" (@as(u64, len)),
           [x3] "{x3}" (tag),
           [x8] "{x8}" (@as(u64, 14)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 pub fn epGrant(ep_cap: u32, thread_cap: u32) i64 {
@@ -172,8 +157,7 @@ pub fn epGrant(ep_cap: u32, thread_cap: u32) i64 {
         : [x0] "{x0}" (@as(u64, ep_cap)),
           [x1] "{x1}" (@as(u64, thread_cap)),
           [x8] "{x8}" (@as(u64, 15)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 pub fn supervisorSet(thread_cap: u32, ep_cap: u32) i64 {
@@ -182,8 +166,7 @@ pub fn supervisorSet(thread_cap: u32, ep_cap: u32) i64 {
         : [x0] "{x0}" (@as(u64, thread_cap)),
           [x1] "{x1}" (@as(u64, ep_cap)),
           [x8] "{x8}" (@as(u64, 16)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 pub const RecvCapResult = struct {
@@ -200,8 +183,7 @@ pub fn ipcSendCap(ep_cap: u32, buf: [*]const u8, len: usize, cap_to_send: u32) i
           [x2] "{x2}" (@as(u64, len)),
           [x3] "{x3}" (@as(u64, cap_to_send)),
           [x8] "{x8}" (@as(u64, 17)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 pub fn ipcRecvCap(ep_cap: u32, buf: [*]u8, tag_filter: u64) RecvCapResult {
@@ -214,8 +196,7 @@ pub fn ipcRecvCap(ep_cap: u32, buf: [*]u8, tag_filter: u64) RecvCapResult {
           [arg1] "{x1}" (@intFromPtr(buf)),
           [arg2] "{x2}" (tag_filter),
           [x8] "{x8}" (@as(u64, 18)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
     return .{ .payload_len = len, .cap_idx = @truncate(cap_val) };
 }
 
@@ -233,8 +214,7 @@ pub fn ipcRecvBlock(ep_cap: u32, buf: [*]u8, tag_filter: u64) RecvResult {
               [arg1] "{x1}" (@intFromPtr(buf)),
               [arg2] "{x2}" (tag_filter),
               [x8] "{x8}" (@as(u64, 21)),
-            : .{ .memory = true }
-        );
+            : .{ .memory = true });
         // E_AGAIN (-7) means we were blocked and woken up — retry
         if (len != -7) return .{ .payload_len = len, .tag = tag };
     }
@@ -252,8 +232,7 @@ pub fn ipcRecvCapBlock(ep_cap: u32, buf: [*]u8, tag_filter: u64) RecvCapResult {
               [arg1] "{x1}" (@intFromPtr(buf)),
               [arg2] "{x2}" (tag_filter),
               [x8] "{x8}" (@as(u64, 22)),
-            : .{ .memory = true }
-        );
+            : .{ .memory = true });
         // E_AGAIN (-7) means we were blocked and woken up — retry
         if (len != -7) return .{ .payload_len = len, .cap_idx = @truncate(cap_val) };
     }
@@ -264,8 +243,7 @@ pub fn threadReap(thread_cap: u32) i64 {
         : [ret] "={x0}" (-> i64),
         : [x0] "{x0}" (@as(u64, thread_cap)),
           [x8] "{x8}" (@as(u64, 19)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 pub fn threadKill(thread_cap: u32) i64 {
@@ -273,6 +251,5 @@ pub fn threadKill(thread_cap: u32) i64 {
         : [ret] "={x0}" (-> i64),
         : [x0] "{x0}" (@as(u64, thread_cap)),
           [x8] "{x8}" (@as(u64, 20)),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }

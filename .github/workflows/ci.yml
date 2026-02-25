@@ -13,6 +13,8 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.0
+      - name: Format check
+        run: zig fmt --check kernel/src/ kernel/arch/ libos/ user/
       - name: Unit tests
         run: zig build test
       - name: Cross-compile kernel
