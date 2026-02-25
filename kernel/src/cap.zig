@@ -140,7 +140,7 @@ pub const CapabilityTable = struct {
         if (!slot.valid) return;
         slot.valid = false;
         slot.cap = Capability.INVALID;
-        self.count -= 1;
+        if (self.count > 0) self.count -= 1;
     }
 
     /// Derive a new capability from an existing one with reduced rights.
