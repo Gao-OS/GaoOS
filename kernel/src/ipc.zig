@@ -485,3 +485,33 @@ test "cap transfer is atomic: full table rolls back" {
     // Receiver should not have gained any new caps
     try testing.expectEqual(cap.MAX_CAPS - 1, receiver_table.count);
 }
+
+test "cap transfer with sparse CAP_NULL gaps" {
+    var sender = cap.CapabilityTable{};
+    var receiver = cap.CapabilityTable{};
+    var ep = Endpoint{};
+
+    const c0 = try sender.create(.frame, 0x1000, cap.Rights.ALL);
+    const c1 = try sender.create(.frame, 0x3000, cap.Rights.ALL);
+
+    // Build message with a CAP_NULL gap: [c0, NULL, c1]
+    var msg = Message.init(1, "sparse");
+    try msg.attachCap(c0);
+    try msg.attachCap(cap.CAP_NULL);
+    msg.cap_count = 3; // manually set to include the gap
+    msg.caps[2] = c1;
+
+    try ep.send(msg, &sender, &receiver);
+
+    // Both real caps removed from sender
+    try testing.expect(sender.lookup(c0) == null);
+    try testing.expect(sender.lookup(c1) == null);
+    try testing.expectEqual(@as(u32, 0), sender.count);
+
+    const received = ep.recv(TAG_ANY).?;
+    // Slots 0 and 2 have real caps; slot 1 is CAP_NULL
+    try testing.expect(received.caps[0] != cap.CAP_NULL);
+    try testing.expectEqual(cap.CAP_NULL, received.caps[1]);
+    try testing.expect(received.caps[2] != cap.CAP_NULL);
+    try testing.expectEqual(@as(u32, 2), receiver.count);
+}

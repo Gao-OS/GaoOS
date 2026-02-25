@@ -538,3 +538,31 @@ test "wakeBlockedRecv wakes only one of multiple waiters" {
     try testing.expectEqual(ThreadState.ready, s.threads[t0].state);
     try testing.expectEqual(ThreadState.blocked, s.threads[t1].state);
 }
+
+test "kill current running thread does not resurrect on schedule" {
+    var s = Scheduler{};
+    const id = try s.spawn();
+    _ = s.schedule(); // id is now .running, current = id
+    try testing.expectEqual(ThreadState.running, s.threads[id].state);
+
+    s.kill(id);
+    try testing.expectEqual(ThreadState.dead, s.threads[id].state);
+
+    // schedule() must not set dead thread back to ready
+    const next = s.schedule();
+    try testing.expect(next == null);
+    try testing.expectEqual(ThreadState.dead, s.threads[id].state);
+}
+
+test "schedule after kill of current finds newly-spawned thread" {
+    var s = Scheduler{};
+    const id = try s.spawn();
+    _ = s.schedule(); // id running
+    s.kill(id);
+
+    const id2 = try s.spawn();
+    const next = s.schedule().?;
+    try testing.expectEqual(id2, next.id);
+    try testing.expectEqual(ThreadState.running, next.state);
+    try testing.expectEqual(ThreadState.dead, s.threads[id].state);
+}

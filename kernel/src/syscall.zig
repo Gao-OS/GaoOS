@@ -239,13 +239,10 @@ fn sysCapDerive(thread_id: sched.ThreadId, src_cap_idx: cap.CapIndex, new_rights
 
 fn sysCapDelete(thread_id: sched.ThreadId, cap_idx: cap.CapIndex) u64 {
     const table = sched.getCapTable(thread_id) orelse return E_BADCAP;
-    const c = table.lookup(cap_idx) orelse return E_BADCAP;
-
-    // If deleting a frame cap, free the underlying physical frame to prevent leaks
-    if (c.cap_type == .frame) {
-        frame_mod.global.free(@intCast(c.object)) catch {};
-    }
-
+    if (table.lookup(cap_idx) == null) return E_BADCAP;
+    // Only deletes the cap entry — does NOT free physical frames.
+    // Use SYS_FRAME_FREE to release frame resources. This prevents
+    // use-after-free when derived caps share the same physical frame.
     table.delete(cap_idx);
     return E_OK;
 }
@@ -1205,15 +1202,35 @@ test "sysFramePhys rejects read without read right" {
     try testing.expectEqual(E_BADCAP, sysFramePhys(tid, derived));
 }
 
-test "sysCapDelete on frame cap frees the physical frame" {
+test "sysCapDelete does not free physical frame (use sysFrameFree)" {
     const tid = testSetup();
     defer testTeardown();
     const before = frame_mod.global.free_count;
     const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
     try testing.expectEqual(before - 1, frame_mod.global.free_count);
 
-    // Delete via sysCapDelete (not sysFrameFree) — should still free the frame
+    // sysCapDelete drops the cap but does NOT free the physical frame
     try testing.expectEqual(E_OK, sysCapDelete(tid, frame_cap));
+    try testing.expectEqual(before - 1, frame_mod.global.free_count); // frame still allocated
+}
+
+test "sysCapDelete on derived frame cap preserves parent" {
+    const tid = testSetup();
+    defer testTeardown();
+    const before = frame_mod.global.free_count;
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+
+    // Derive a read-only cap pointing to the same physical frame
+    const read_only: u8 = @bitCast(cap.Rights{ .read = true });
+    const derived: cap.CapIndex = @intCast(sysCapDerive(tid, frame_cap, read_only));
+
+    // Delete derived — frame must still be allocated, parent cap still valid
+    try testing.expectEqual(E_OK, sysCapDelete(tid, derived));
+    try testing.expectEqual(before - 1, frame_mod.global.free_count);
+    try testing.expect(sched.getCapTable(tid).?.lookup(frame_cap) != null);
+
+    // Cleanup via proper sysFrameFree
+    try testing.expectEqual(E_OK, sysFrameFree(tid, frame_cap));
     try testing.expectEqual(before, frame_mod.global.free_count);
 }
 
