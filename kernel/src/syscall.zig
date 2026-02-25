@@ -1108,6 +1108,92 @@ test "sysIpcSendCap transfers capability" {
     try testing.expectEqual(E_OK, result);
 }
 
+test "sysExit kills thread and notifies supervisor" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    _ = sysSupervisorSet(tid, child_cap, ep_cap);
+
+    // Resolve child ID
+    const table = sched.getCapTable(tid).?;
+    const thread_cap_val = table.lookup(child_cap).?;
+    const child_id = capObjectToId(thread_cap_val.object).?;
+
+    // sysExit on the child
+    _ = sysExit(child_id);
+    try testing.expectEqual(sched.ThreadState.dead, sched.global.threads[child_id].state);
+
+    // Supervisor should have a fault notification
+    const ep = sched.getEndpoint(tid).?;
+    const msg = ep.recv(0);
+    try testing.expect(msg != null);
+    try testing.expectEqual(@as(u64, 0xDEAD_DEAD_DEAD_DEAD), msg.?.tag);
+}
+
+test "sysEpGrant creates cap in target thread" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+
+    // Grant endpoint to child
+    const result = sysEpGrant(tid, ep_cap, child_cap);
+    try testing.expect(result < 256); // returns new cap index in child's table
+
+    // Verify child has an ipc_endpoint cap
+    const table = sched.getCapTable(tid).?;
+    const thread_cap_val = table.lookup(child_cap).?;
+    const child_id = capObjectToId(thread_cap_val.object).?;
+    const child_table = sched.getCapTable(child_id).?;
+    const child_ep = child_table.lookup(@intCast(result)).?;
+    try testing.expectEqual(cap.CapabilityType.ipc_endpoint, child_ep.cap_type);
+}
+
+test "sysIpcRecvBlock blocks on empty endpoint" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Set thread as running/current so blockCurrent works
+    sched.global.threads[tid].state = .running;
+    sched.global.current = tid;
+    sched.global.has_current = true;
+
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvBlock(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(E_AGAIN, result);
+
+    // Thread should be blocked now
+    try testing.expectEqual(sched.ThreadState.blocked, sched.global.threads[tid].state);
+    try testing.expectEqual(tid, sched.global.threads[tid].blocked_ep);
+}
+
+test "sysIpcRecvBlock returns E_CLOSED on closed endpoint" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Close the endpoint
+    const ep = sched.getEndpoint(tid).?;
+    ep.close();
+
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvBlock(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(E_CLOSED, result);
+}
+
+test "sysFramePhys rejects read without read right" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Allocate a frame, then derive write-only (no read)
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    const write_only: u8 = @bitCast(cap.Rights{ .write = true });
+    const derived: cap.CapIndex = @intCast(sysCapDerive(tid, frame_cap, write_only));
+
+    try testing.expectEqual(E_BADCAP, sysFramePhys(tid, derived));
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');
