@@ -270,9 +270,7 @@ fn sysIpcSend(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u64,
 
     if (msg_ptr != 0 and len > 0) {
         const src: [*]const u8 = @ptrFromInt(msg_ptr);
-        for (0..len) |i| {
-            msg.payload[i] = src[i];
-        }
+        @memcpy(msg.payload[0..len], src[0..len]);
     }
 
     ep.send(msg, null, null) catch |err| {
@@ -331,9 +329,7 @@ fn sysIpcRecv(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex
     // Copy payload to user buffer
     if (buf_ptr != 0 and msg.payload_len > 0) {
         const dst: [*]u8 = @ptrFromInt(buf_ptr);
-        for (0..msg.payload_len) |i| {
-            dst[i] = msg.payload[i];
-        }
+        @memcpy(dst[0..msg.payload_len], msg.payload[0..msg.payload_len]);
     }
 
     // Return: x0 = payload length, x1 = tag
@@ -398,9 +394,7 @@ fn sysIpcRecvBlock(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.Cap
     // Copy payload to user buffer
     if (buf_ptr != 0 and msg.payload_len > 0) {
         const dst: [*]u8 = @ptrFromInt(buf_ptr);
-        for (0..msg.payload_len) |i| {
-            dst[i] = msg.payload[i];
-        }
+        @memcpy(dst[0..msg.payload_len], msg.payload[0..msg.payload_len]);
     }
 
     // Return: x0 = payload length, x1 = tag
@@ -584,9 +578,7 @@ fn sysIpcSendCap(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u
     var msg = ipc.Message{ .payload_len = len };
     if (msg_ptr != 0 and len > 0) {
         const src: [*]const u8 = @ptrFromInt(msg_ptr);
-        for (0..len) |i| {
-            msg.payload[i] = src[i];
-        }
+        @memcpy(msg.payload[0..len], src[0..len]);
     }
     msg.attachCap(cap_to_send) catch return E_BADARG;
 
@@ -648,9 +640,7 @@ fn sysIpcRecvCap(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIn
     // Copy payload to user buffer
     if (buf_ptr != 0 and msg.payload_len > 0) {
         const dst: [*]u8 = @ptrFromInt(buf_ptr);
-        for (0..msg.payload_len) |i| {
-            dst[i] = msg.payload[i];
-        }
+        @memcpy(dst[0..msg.payload_len], msg.payload[0..msg.payload_len]);
     }
 
     // x0 = payload length, x1 = transferred cap index (CAP_NULL if none)
@@ -717,9 +707,7 @@ fn sysIpcRecvCapBlock(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.
 
     if (buf_ptr != 0 and msg.payload_len > 0) {
         const dst: [*]u8 = @ptrFromInt(buf_ptr);
-        for (0..msg.payload_len) |i| {
-            dst[i] = msg.payload[i];
-        }
+        @memcpy(dst[0..msg.payload_len], msg.payload[0..msg.payload_len]);
     }
 
     frame[31] = @as(u64, msg.payload_len);
