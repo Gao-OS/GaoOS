@@ -1753,6 +1753,36 @@ test "dispatch SYS_IPC_SEND_WITH_TAG routes tag argument correctly" {
     try testing.expectEqual(@as(u64, 0xCAFE), recv_buf[32]); // tag preserved
 }
 
+test "sysIpcSendCap returns E_BADARG for kernel-space msg_ptr" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    // msg_ptr=0x80000 is kernel space, len=1 — pointer validation rejects it
+    try testing.expectEqual(E_BADARG, sysIpcSendCap(tid, ep_cap, 0x80000, 1, frame_cap));
+}
+
+test "sysIpcRecvCap returns E_BADARG for kernel-space buf_ptr" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    // Pre-enqueue so validation happens before dequeue
+    _ = sysIpcSend(tid, ep_cap, 0, 0, 1);
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvCap(tid, &frame_buf, ep_cap, 0x80000, 0);
+    try testing.expectEqual(E_BADARG, result);
+}
+
+test "sysThreadCreate returns E_FULL when scheduler table is full" {
+    const tid = testSetup();
+    defer testTeardown();
+    // testSetup already spawned tid=0; fill remaining slots directly
+    while (sched.global.count < sched.MAX_THREADS) {
+        _ = sched.global.spawn() catch break;
+    }
+    try testing.expectEqual(E_FULL, sysThreadCreate(tid, 0x200000, 0x300000));
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');
