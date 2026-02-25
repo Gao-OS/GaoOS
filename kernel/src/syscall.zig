@@ -1587,6 +1587,54 @@ test "sysIpcSend rejects non-endpoint cap" {
     try testing.expectEqual(E_BADCAP, sysIpcSend(tid, frame_cap, 0, 0, 0));
 }
 
+test "sysYield returns E_OK" {
+    try testing.expectEqual(E_OK, sysYield());
+}
+
+test "sysFrameAlloc returns E_NOMEM when pool exhausted" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Drain all frames directly (bypassing cap table so we don't hit E_FULL first)
+    while (frame_mod.global.alloc()) |_| {} else |_| {}
+    try testing.expectEqual(E_NOMEM, sysFrameAlloc(tid));
+}
+
+test "sysCapDerive returns E_FULL when cap table is full" {
+    const tid = testSetup();
+    defer testTeardown();
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    // Fill the rest of the cap table
+    const table = sched.getCapTable(tid).?;
+    while (table.count < cap.MAX_CAPS) {
+        _ = table.create(.device, 0, cap.Rights.ALL) catch break;
+    }
+    // Derive should now fail with E_FULL
+    const read_only: u8 = @bitCast(cap.Rights{ .read = true });
+    try testing.expectEqual(E_FULL, sysCapDerive(tid, frame_cap, read_only));
+}
+
+test "sysIpcRecv returns E_BADARG for out-of-user-range buf_ptr" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    // Send a message so the queue is non-empty (E_AGAIN won't mask E_BADARG)
+    _ = sysIpcSend(tid, ep_cap, 0, 0, 1);
+    var frame_buf: [34]u64 = undefined;
+    // Kernel-space pointer — outside user range → E_BADARG
+    const result = sysIpcRecv(tid, &frame_buf, ep_cap, 0x80000, 0);
+    try testing.expectEqual(E_BADARG, result);
+}
+
+test "sysEpCreate returns E_FULL when cap table is full" {
+    const tid = testSetup();
+    defer testTeardown();
+    const table = sched.getCapTable(tid).?;
+    while (table.count < cap.MAX_CAPS) {
+        _ = table.create(.device, 0, cap.Rights.ALL) catch break;
+    }
+    try testing.expectEqual(E_FULL, sysEpCreate(tid));
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');
