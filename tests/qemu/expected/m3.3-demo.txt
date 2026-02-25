@@ -5,26 +5,71 @@ Initializing scheduler...
   Granted: cap[0] = device(UART, write)
 Starting timer (10ms slice)...
 Setting up user space...
-  User program at 0x200000 (257648 bytes)
+  User program at 0x200000 (260560 bytes)
 
 Dropping to EL0 → user init
 ─────────────────────────────────
-GaoOS M3.3 Multi-Runtime Demo
-==============================
+GaoOS Multi-Runtime Demo
+========================
 Spawning Worker A...
 Spawning Worker B...
+Spawning E-Ink driver...
 Workers spawned. Waiting for messages...
   [Worker A] hello!
-  [Worker A] allocated frame 0x402000
+  [Worker A] allocated frame 0x403000
   [Worker A] sent frame cap to orchestrator.
   [Worker A] exiting.
 [kernel] thread 1 exited via syscall
   [Worker B] hello!
   [Worker B] exiting.
 [kernel] thread 2 exited via syscall
-Orchestrator: received frame 0x402000
-Orchestrator: fault from thread 1 (1/2)
-Orchestrator: fault from thread 2 (2/2)
+  [E-Ink] driver starting
+  [E-Ink] init sequence:
+  SPI CMD: 0x12
+  SPI CMD: 0x01
+  SPI DAT: 0xf9
+  SPI DAT: 0x00
+  SPI DAT: 0x00
+  SPI CMD: 0x11
+  SPI DAT: 0x03
+  SPI CMD: 0x44
+  SPI DAT: 0x00
+  SPI DAT: 0x0f
+  SPI CMD: 0x45
+  SPI DAT: 0x00
+  SPI DAT: 0x00
+  SPI DAT: 0xf9
+  SPI DAT: 0x00
+  SPI CMD: 0x4e
+  SPI DAT: 0x00
+  SPI CMD: 0x4f
+  SPI DAT: 0x00
+  SPI DAT: 0x00
+  [E-Ink] writing test pattern:
+  SPI CMD: 0x24
+  SPI DAT: 0xff
+  SPI DAT: 0xff
+  SPI DAT: 0xff
+  SPI DAT: 0xff
+  SPI DAT: 0xff
+  SPI DAT: 0xff
+  SPI DAT: 0xff
+  SPI DAT: 0xff
+  SPI DAT: ... (bulk data)
+Orchestrator: received frame 0x403000
+Orchestrator: fault from thread 1 (1/3)
+Orchestrator: fault from thread 2 (2/3)
+  SPI DAT: total 4000 bytes
+  [E-Ink] refresh:
+  SPI CMD: 0x22
+  SPI DAT: 0xf7
+  SPI CMD: 0x20
+  [E-Ink] deep sleep:
+  SPI CMD: 0x10
+  SPI DAT: 0x01
+  [E-Ink] driver done.
+[kernel] thread 3 exited via syscall
+Orchestrator: fault from thread 3 (3/3)
 Cap delegation: OK
 Fault supervision: OK
 All workers done. System shutting down.

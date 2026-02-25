@@ -19,6 +19,8 @@ pub fn build(b: *std.Build) void {
     const mmio = b.createModule(.{ .root_source_file = b.path("platform/raspi/mmio.zig"), .target = opts.target, .optimize = opts.optimize });
     const gpio = b.createModule(.{ .root_source_file = b.path("platform/raspi/gpio.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{.{ .name = "mmio", .module = mmio }} });
     const uart = b.createModule(.{ .root_source_file = b.path("platform/raspi/uart.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "mmio", .module = mmio }, .{ .name = "gpio", .module = gpio } } });
+    const spi = b.createModule(.{ .root_source_file = b.path("platform/raspi/spi.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "mmio", .module = mmio }, .{ .name = "gpio", .module = gpio } } });
+    _ = spi; // Available for real-hardware builds; QEMU uses mock SPI
 
     // Kernel modules (ordered by dependency)
     const timer = b.createModule(.{ .root_source_file = b.path("kernel/arch/aarch64/timer.zig"), .target = opts.target, .optimize = opts.optimize });
@@ -38,13 +40,18 @@ pub fn build(b: *std.Build) void {
         .optimize = opts.optimize,
     });
 
+    // E-ink user-space driver modules (mock SPI over UART for QEMU)
+    const waveshare = b.createModule(.{ .root_source_file = b.path("user/eink/waveshare.zig"), .target = opts.target, .optimize = opts.optimize });
+    const spi_mock = b.createModule(.{ .root_source_file = b.path("user/eink/spi_mock.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{.{ .name = "libos", .module = libos }} });
+    const eink_driver = b.createModule(.{ .root_source_file = b.path("user/eink/driver.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "libos", .module = libos }, .{ .name = "waveshare", .module = waveshare }, .{ .name = "spi_mock", .module = spi_mock } } });
+
     const user_init_exe = b.addExecutable(.{
         .name = "user_init",
         .root_module = b.createModule(.{
             .root_source_file = b.path("user/init/main.zig"),
             .target = opts.target,
             .optimize = opts.optimize,
-            .imports = &.{.{ .name = "libos", .module = libos }},
+            .imports = &.{ .{ .name = "libos", .module = libos }, .{ .name = "eink_driver", .module = eink_driver } },
         }),
     });
     user_init_exe.setLinkerScript(b.path("user/linker.ld"));

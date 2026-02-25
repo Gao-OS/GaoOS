@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # GaoOS QEMU integration test runner
 #
-# Usage: ./tests/qemu/run_test.sh [kernel_image] [expected_output]
+# Validates that the kernel boots and produces expected key output markers.
+# Uses marker-based checking (not exact diff) because concurrent threads
+# interleave UART output non-deterministically.
 #
-# Defaults:
-#   kernel_image  = zig-out/bin/kernel8.img
-#   expected_output = tests/qemu/expected/m3.3-demo.txt
+# Usage: ./tests/qemu/run_test.sh [kernel_image]
 #
 # Exit codes:
-#   0 = pass (output matches expected)
-#   1 = fail (output differs)
+#   0 = pass (all markers found)
+#   1 = fail (missing markers)
 #   2 = build failure
-#   3 = timeout / QEMU failure
 
 set -euo pipefail
 
@@ -19,7 +18,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 KERNEL="${1:-zig-out/bin/kernel8.img}"
-EXPECTED="${2:-tests/qemu/expected/m3.3-demo.txt}"
 TIMEOUT_SEC="${QEMU_TIMEOUT:-15}"
 
 cd "$PROJECT_ROOT"
@@ -44,29 +42,83 @@ if ! timeout "$TIMEOUT_SEC" qemu-system-aarch64 \
     -display none \
     -no-reboot \
     2>/dev/null > "$ACTUAL"; then
-    # timeout exits 124, QEMU may exit non-zero normally
     true
 fi
 
-# Strip kernel boot preamble (everything before the user-space output)
-# and normalize trailing whitespace
-sed -i 's/[[:space:]]*$//' "$ACTUAL"
+# Key markers that MUST appear in the output (order-independent for
+# concurrent thread sections, but each must be present)
+MARKERS=(
+    # Boot sequence
+    "GaoOS v0.2"
+    "MMU enabled"
+    "Thread 0 (init)"
+    "Dropping to EL0"
 
-if [ ! -f "$EXPECTED" ]; then
-    echo "No expected output file: $EXPECTED"
-    echo "Actual output:"
-    cat "$ACTUAL"
-    echo ""
-    echo "To create expected output: cp $ACTUAL $EXPECTED"
-    exit 1
-fi
+    # Demo header
+    "GaoOS Multi-Runtime Demo"
 
-# Compare
-if diff -u "$EXPECTED" "$ACTUAL"; then
-    echo "PASS"
+    # Worker spawning
+    "Spawning Worker A"
+    "Spawning Worker B"
+    "Spawning E-Ink driver"
+    "Workers spawned"
+
+    # Worker A
+    "[Worker A] hello"
+    "[Worker A] allocated frame"
+    "[Worker A] sent frame cap"
+    "[Worker A] exiting"
+
+    # Worker B
+    "[Worker B] hello"
+    "[Worker B] exiting"
+
+    # E-Ink driver
+    "[E-Ink] driver starting"
+    "[E-Ink] init sequence"
+    "SPI CMD: 0x12"        # SW_RESET
+    "SPI CMD: 0x01"        # DRIVER_OUTPUT
+    "SPI CMD: 0x24"        # WRITE_RAM
+    "[E-Ink] writing test pattern"
+    "[E-Ink] refresh"
+    "SPI CMD: 0x22"        # DISPLAY_UPDATE_CTRL2
+    "SPI CMD: 0x20"        # MASTER_ACTIVATION
+    "[E-Ink] deep sleep"
+    "SPI CMD: 0x10"        # DEEP_SLEEP
+    "[E-Ink] driver done"
+
+    # Orchestrator results
+    "Orchestrator: received frame"
+    "Orchestrator: fault from thread"
+    "Cap delegation: OK"
+    "Fault supervision: OK"
+    "All workers done"
+
+    # Kernel exit
+    "thread 0 exited via syscall"
+    "Returning to kernel idle loop"
+)
+
+PASS=true
+FAILED=()
+
+for marker in "${MARKERS[@]}"; do
+    if ! grep -qF "$marker" "$ACTUAL"; then
+        FAILED+=("$marker")
+        PASS=false
+    fi
+done
+
+if $PASS; then
+    echo "PASS (${#MARKERS[@]} markers verified)"
     exit 0
 else
+    echo "FAIL: missing ${#FAILED[@]} of ${#MARKERS[@]} markers:"
+    for f in "${FAILED[@]}"; do
+        echo "  - \"$f\""
+    done
     echo ""
-    echo "FAIL: output differs from expected"
+    echo "Actual output:"
+    cat "$ACTUAL"
     exit 1
 fi

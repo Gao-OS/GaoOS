@@ -1,4 +1,4 @@
-// GaoOS M3.3 Multi-Runtime Demo
+// GaoOS Multi-Runtime Demo
 //
 // Demonstrates the full Phase 2+3 capability stack:
 //   - Frame allocation and deallocation
@@ -6,26 +6,22 @@
 //   - Thread creation from user space
 //   - Capability delegation (frame cap transfer via IPC)
 //   - Fault supervision (orchestrator receives death notifications)
+//   - E-ink user-space driver (mock SPI over UART)
 //
 // Structure:
-//   Thread 0 (orchestrator): spawns Worker A and Worker B, sets itself as
-//     supervisor for both, then drains its IPC endpoint:
-//       1. A frame capability transferred from Worker A (SYS_IPC_SEND_CAP)
-//       2. Fault notifications for both workers on exit
+//   Thread 0 (orchestrator): spawns Worker A, Worker B, and E-Ink driver,
+//     sets itself as supervisor for all, then drains its IPC endpoint.
 //
 //   Worker A: allocates a frame, sends it via SYS_IPC_SEND_CAP, exits.
 //   Worker B: prints a greeting, exits.
-//
-// Pre-arranged cap layout (set up by orchestrator via threadGrant):
-//   Thread 0:  cap[0]=UART  cap[1]=own_endpoint
-//   Worker A:  cap[0]=UART  cap[1]=orchestrator_endpoint
-//   Worker B:  cap[0]=UART
+//   E-Ink:    runs Waveshare init/write/refresh/sleep sequence over mock SPI.
 
 const libos = @import("libos");
 const sys = libos.syscall;
 const io = libos.io;
 const ipc_lib = libos.ipc;
 const fault_lib = libos.fault;
+const eink = @import("eink_driver");
 
 const UART_CAP: u32 = 0;
 const ORCH_EP_CAP: u32 = 1; // Orchestrator's endpoint (in its own table)
@@ -33,7 +29,8 @@ const WORKER_A_EP_CAP: u32 = 1; // Worker A's cap pointing to orchestrator's end
 
 const CAP_NULL: u32 = 0xFFFFFFFF;
 const TAG_ANY: u64 = 0;
-const MAX_ITERATIONS: u32 = 300;
+const MAX_ITERATIONS: u32 = 500;
+const TOTAL_WORKERS: u32 = 3;
 
 // ─── Worker A ────────────────────────────────────────────────────────
 
@@ -75,8 +72,8 @@ fn worker_b() callconv(.{ .aarch64_aapcs = .{} }) noreturn {
 // ─── Orchestrator (thread 0) ─────────────────────────────────────────
 
 export fn user_main() void {
-    io.println(UART_CAP, "GaoOS M3.3 Multi-Runtime Demo");
-    io.println(UART_CAP, "==============================");
+    io.println(UART_CAP, "GaoOS Multi-Runtime Demo");
+    io.println(UART_CAP, "========================");
 
     // ── Create orchestrator's IPC endpoint ───────────────────────────
     const ep_result = ipc_lib.createEndpoint();
@@ -133,6 +130,29 @@ export fn user_main() void {
     // Set orchestrator as Worker B's supervisor
     _ = sys.supervisorSet(b_thread_cap, ORCH_EP_CAP);
 
+    // ── Spawn E-Ink driver ───────────────────────────────────────────
+    io.println(UART_CAP, "Spawning E-Ink driver...");
+    const e_stack_r = sys.frameAlloc();
+    if (e_stack_r < 0) {
+        io.println(UART_CAP, "FATAL: E-Ink stack alloc failed");
+        return;
+    }
+    const e_stack_cap: u32 = @intCast(e_stack_r);
+    const e_stack_top: u64 = @as(u64, @bitCast(sys.framePhys(e_stack_cap))) + 4096;
+
+    const e_thread_r = sys.threadCreate(@intFromPtr(&eink.einkMain), e_stack_top);
+    if (e_thread_r < 0) {
+        io.println(UART_CAP, "FATAL: E-Ink thread create failed");
+        return;
+    }
+    const e_thread_cap: u32 = @intCast(e_thread_r);
+
+    // cap[0]=UART in E-Ink driver's table
+    _ = sys.threadGrant(e_thread_cap, UART_CAP);
+
+    // Set orchestrator as E-Ink driver's supervisor
+    _ = sys.supervisorSet(e_thread_cap, ORCH_EP_CAP);
+
     io.println(UART_CAP, "Workers spawned. Waiting for messages...");
 
     // ── Drain endpoint: cap message + 2 fault notifications ──────────
@@ -141,7 +161,7 @@ export fn user_main() void {
     var got_frame = false;
     var iterations: u32 = 0;
 
-    while (fault_count < 2) {
+    while (fault_count < TOTAL_WORKERS) {
         if (iterations >= MAX_ITERATIONS) {
             io.println(UART_CAP, "Orchestrator: timeout!");
             break;
@@ -173,15 +193,16 @@ export fn user_main() void {
             io.putDec(UART_CAP, fm.thread_id);
             io.print(UART_CAP, " (");
             io.putDec(UART_CAP, fault_count);
-            io.println(UART_CAP, "/2)");
+            io.println(UART_CAP, "/3)");
         }
     }
 
     if (got_frame) io.println(UART_CAP, "Cap delegation: OK");
-    if (fault_count >= 2) io.println(UART_CAP, "Fault supervision: OK");
+    if (fault_count >= TOTAL_WORKERS) io.println(UART_CAP, "Fault supervision: OK");
 
     io.println(UART_CAP, "All workers done. System shutting down.");
 
     _ = sys.frameFree(a_stack_cap);
     _ = sys.frameFree(b_stack_cap);
+    _ = sys.frameFree(e_stack_cap);
 }
