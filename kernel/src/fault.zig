@@ -171,6 +171,21 @@ test "notify sends fault to valid supervisor" {
     sched.global.reap(child_id);
 }
 
+test "fault reason killed serializes correctly" {
+    var ep = ipc.Endpoint{};
+    notifyEndpoint(&ep, .killed, 3, 0, 0);
+
+    const received = ep.recv(FAULT_TAG).?;
+    var copy: FaultMsg = undefined;
+    const dst: [*]u8 = @ptrCast(&copy);
+    for (0..@sizeOf(FaultMsg)) |i| {
+        dst[i] = received.payload[i];
+    }
+    try testing.expectEqual(@as(u8, @intFromEnum(Reason.killed)), copy.reason);
+    try testing.expectEqual(@as(u32, 3), copy.thread_id);
+    try testing.expectEqual(@as(u64, 0), copy.fault_addr);
+}
+
 test "notify skips thread with no supervisor" {
     sched.global = .{};
 
