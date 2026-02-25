@@ -1863,6 +1863,25 @@ test "sysIpcRecvCapBlock rejects endpoint cap without read right" {
     try testing.expectEqual(E_BADCAP, result);
 }
 
+test "sysIpcRecvCap returns E_AGAIN when empty" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvCap(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(E_AGAIN, result);
+}
+
+test "sysIpcSendCap returns E_CLOSED on closed endpoint" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    const ep = sched.getEndpoint(tid).?;
+    ep.close();
+    try testing.expectEqual(E_CLOSED, sysIpcSendCap(tid, ep_cap, 0, 0, frame_cap));
+}
+
 test "sysCapDerive rejects non-existent cap index" {
     const tid = testSetup();
     defer testTeardown();
