@@ -57,6 +57,7 @@ pub const Thread = struct {
     stack_base: usize = 0,
     supervisor: ThreadId = 0,
     supervisor_ep: u32 = 0xFFFFFFFF, // Endpoint index for fault notifications (0xFFFFFFFF = none)
+    blocked_ep: ThreadId = THREAD_NONE, // Endpoint this thread is blocked waiting on (THREAD_NONE = not blocked)
 };
 
 /// Per-thread kernel stacks for context switching.
@@ -200,6 +201,7 @@ pub const Scheduler = struct {
         zeroContext(&thread.context);
         thread.stack_base = 0;
         thread.supervisor = 0;
+        thread.blocked_ep = THREAD_NONE;
         resetCapTable(id);
         resetEndpoint(id);
         self.count -= 1;
@@ -218,6 +220,19 @@ pub const Scheduler = struct {
         const thread = &self.threads[id];
         if (thread.state == .blocked) {
             thread.state = .ready;
+            thread.blocked_ep = THREAD_NONE;
+        }
+    }
+
+    /// Wake one thread blocked on recv for the given endpoint.
+    /// Called after a message is enqueued to an endpoint.
+    pub fn wakeBlockedRecv(self: *Scheduler, ep_id: ThreadId) void {
+        for (&self.threads) |*thread| {
+            if (thread.state == .blocked and thread.blocked_ep == ep_id) {
+                thread.state = .ready;
+                thread.blocked_ep = THREAD_NONE;
+                return; // wake only one
+            }
         }
     }
 };
@@ -390,6 +405,44 @@ test "reap resets supervisor_ep" {
     s.reap(id);
     try testing.expectEqual(@as(u32, 0), s.threads[id].supervisor);
     try testing.expectEqual(ThreadState.free, s.threads[id].state);
+}
+
+test "wakeBlockedRecv unblocks waiting thread" {
+    var s = Scheduler{};
+    const t0 = try s.spawn();
+    const t1 = try s.spawn();
+
+    // Make t0 running, then block it on endpoint t1
+    _ = s.schedule();
+    try testing.expectEqual(t0, s.current);
+    s.threads[t0].blocked_ep = t1;
+    s.blockCurrent();
+    try testing.expectEqual(ThreadState.blocked, s.threads[t0].state);
+    try testing.expectEqual(t1, s.threads[t0].blocked_ep);
+
+    // Wake thread blocked on endpoint t1
+    s.wakeBlockedRecv(t1);
+    try testing.expectEqual(ThreadState.ready, s.threads[t0].state);
+    try testing.expectEqual(THREAD_NONE, s.threads[t0].blocked_ep);
+
+    // t0 is now schedulable again
+    _ = s.schedule(); // runs t1 (round-robin from t0)
+    const next = s.schedule().?;
+    try testing.expectEqual(t0, next.id);
+}
+
+test "wakeBlockedRecv ignores threads on other endpoints" {
+    var s = Scheduler{};
+    const t0 = try s.spawn();
+    _ = try s.spawn(); // t1
+
+    _ = s.schedule();
+    s.threads[t0].blocked_ep = 5; // blocked on endpoint 5
+    s.blockCurrent();
+
+    // Wake for endpoint 3 — should not wake t0
+    s.wakeBlockedRecv(3);
+    try testing.expectEqual(ThreadState.blocked, s.threads[t0].state);
 }
 
 test "per-thread cap table and endpoint" {

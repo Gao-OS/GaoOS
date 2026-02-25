@@ -349,3 +349,63 @@ test "rights eql and isSubsetOf" {
     try testing.expect(Rights.ALL.eql(Rights.ALL));
     try testing.expect(!Rights.ALL.eql(Rights.READ_ONLY));
 }
+
+test "derive when table full returns TableFull" {
+    var table = CapabilityTable{};
+    // Fill all slots
+    for (0..MAX_CAPS) |i| {
+        _ = try table.create(.frame, i, Rights.ALL);
+    }
+    // derive should fail with TableFull, not InvalidCapability
+    const result = table.derive(0, Rights.READ_ONLY);
+    try testing.expectError(error.TableFull, result);
+}
+
+test "double delete is safe" {
+    var table = CapabilityTable{};
+    const idx = try table.create(.frame, 0xF000, Rights.ALL);
+    try testing.expectEqual(@as(u32, 1), table.count);
+    table.delete(idx);
+    try testing.expectEqual(@as(u32, 0), table.count);
+    // Second delete on same slot should be a no-op (slot already invalid)
+    table.delete(idx);
+    try testing.expectEqual(@as(u32, 0), table.count);
+}
+
+test "delete parent does not affect derived cap" {
+    var table = CapabilityTable{};
+    const parent = try table.create(.frame, 0x10000, Rights.ALL);
+    const child = try table.derive(parent, Rights.READ_ONLY);
+    // Delete parent
+    table.delete(parent);
+    try testing.expect(table.lookup(parent) == null);
+    // Child is independent — still valid
+    const c = table.lookup(child).?;
+    try testing.expect(c.rights.read);
+    try testing.expectEqual(@as(usize, 0x10000), c.object);
+}
+
+test "derive with NONE rights produces fully attenuated cap" {
+    var table = CapabilityTable{};
+    const parent = try table.create(.frame, 0x20000, Rights.ALL);
+    const child = try table.derive(parent, Rights.NONE);
+    const c = table.lookup(child).?;
+    try testing.expect(!c.rights.read);
+    try testing.expect(!c.rights.write);
+    try testing.expect(!c.rights.grant);
+    try testing.expect(!c.rights.revoke);
+    try testing.expectEqual(@as(usize, 0x20000), c.object);
+}
+
+test "derive chain attenuation" {
+    var table = CapabilityTable{};
+    const root = try table.create(.ipc_endpoint, 0x30000, Rights.ALL);
+    const mid = try table.derive(root, Rights.READ_WRITE);
+    const leaf = try table.derive(mid, Rights.READ_ONLY);
+    const c = table.lookup(leaf).?;
+    try testing.expect(c.rights.read);
+    try testing.expect(!c.rights.write);
+    try testing.expectEqual(CapabilityType.ipc_endpoint, c.cap_type);
+    // Cannot escalate back up
+    try testing.expectError(error.RightsEscalation, table.derive(leaf, Rights.READ_WRITE));
+}

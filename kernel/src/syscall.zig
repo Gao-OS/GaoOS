@@ -44,6 +44,8 @@ pub const SYS_IPC_SEND_CAP = 17;
 pub const SYS_IPC_RECV_CAP = 18;
 pub const SYS_THREAD_REAP = 19;
 pub const SYS_THREAD_KILL = 20;
+pub const SYS_IPC_RECV_BLOCK = 21;
+pub const SYS_IPC_RECV_CAP_BLOCK = 22;
 
 // ─── Error codes (returned in x0) ──────────────────────────────────
 
@@ -114,12 +116,14 @@ pub fn dispatch(thread_id: sched.ThreadId, frame: [*]u64) void {
         SYS_IPC_RECV_CAP => sysIpcRecvCap(thread_id, frame, @truncate(arg0), arg1, arg2),
         SYS_THREAD_REAP => sysThreadReap(thread_id, @truncate(arg0)),
         SYS_THREAD_KILL => sysThreadKill(thread_id, @truncate(arg0)),
+        SYS_IPC_RECV_BLOCK => sysIpcRecvBlock(thread_id, frame, @truncate(arg0), arg1, arg2),
+        SYS_IPC_RECV_CAP_BLOCK => sysIpcRecvCapBlock(thread_id, frame, @truncate(arg0), arg1, arg2),
         else => E_BADSYS,
     };
 
     // Write return value back to x0 in the exception frame.
-    // (sysIpcRecv and sysIpcRecvCap write their return values directly to frame)
-    if (syscall_num != SYS_IPC_RECV and syscall_num != SYS_IPC_RECV_CAP) {
+    // (sysIpcRecv, sysIpcRecvCap, and sysIpcRecvBlock write their return values directly to frame)
+    if (syscall_num != SYS_IPC_RECV and syscall_num != SYS_IPC_RECV_CAP and syscall_num != SYS_IPC_RECV_BLOCK and syscall_num != SYS_IPC_RECV_CAP_BLOCK) {
         frame[31] = result;
     }
 
@@ -263,6 +267,10 @@ fn sysIpcSend(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u64,
             error.TableFull => E_FULL,
         };
     };
+
+    // Wake any thread blocked on recv for this endpoint
+    sched.global.wakeBlockedRecv(ep_idx);
+
     return E_OK;
 }
 
@@ -300,6 +308,67 @@ fn sysIpcRecv(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex
     }
 
     const msg = ep.recv(tag_filter) orelse {
+        frame[31] = E_AGAIN;
+        return E_AGAIN;
+    };
+
+    // Copy payload to user buffer
+    if (buf_ptr != 0 and msg.payload_len > 0) {
+        const dst: [*]u8 = @ptrFromInt(buf_ptr);
+        for (0..msg.payload_len) |i| {
+            dst[i] = msg.payload[i];
+        }
+    }
+
+    // Return: x0 = payload length, x1 = tag
+    frame[31] = @as(u64, msg.payload_len);
+    frame[32] = msg.tag;
+    return @as(u64, msg.payload_len);
+}
+
+fn sysIpcRecvBlock(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex, buf_ptr: u64, tag_filter: u64) u64 {
+    const table = sched.getCapTable(thread_id) orelse {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    };
+    const c = table.lookup(ep_cap_idx) orelse {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    };
+    if (c.cap_type != .ipc_endpoint) {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    }
+    if (!c.rights.read) {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    }
+
+    const ep_idx = capObjectToId(c.object) orelse {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    };
+    const ep = sched.getEndpoint(ep_idx) orelse {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    };
+
+    // Validate user buffer before consuming message
+    if (buf_ptr != 0 and !isValidUserRange(buf_ptr, ipc.MAX_PAYLOAD)) {
+        frame[31] = E_BADARG;
+        return E_BADARG;
+    }
+
+    const msg = ep.recv(tag_filter) orelse {
+        // No message available — block the calling thread.
+        // The exception handler will reschedule. When a send to this
+        // endpoint later unblocks us, user space retries the recv.
+        const thread = sched.global.getThread(thread_id) orelse {
+            frame[31] = E_AGAIN;
+            return E_AGAIN;
+        };
+        thread.blocked_ep = ep_idx;
+        sched.global.blockCurrent();
         frame[31] = E_AGAIN;
         return E_AGAIN;
     };
@@ -503,6 +572,10 @@ fn sysIpcSendCap(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u
             error.TableFull => E_FULL,
         };
     };
+
+    // Wake any thread blocked on recv for this endpoint
+    sched.global.wakeBlockedRecv(ep_idx);
+
     return E_OK;
 }
 
@@ -555,6 +628,68 @@ fn sysIpcRecvCap(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIn
     }
 
     // x0 = payload length, x1 = transferred cap index (CAP_NULL if none)
+    frame[31] = @as(u64, msg.payload_len);
+    frame[32] = if (msg.cap_count > 0)
+        @as(u64, msg.caps[0])
+    else
+        @as(u64, cap.CAP_NULL);
+    return @as(u64, msg.payload_len);
+}
+
+fn sysIpcRecvCapBlock(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex, buf_ptr: u64, tag_filter: u64) u64 {
+    const table = sched.getCapTable(thread_id) orelse {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    };
+    const c = table.lookup(ep_cap_idx) orelse {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    };
+    if (c.cap_type != .ipc_endpoint) {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    }
+    if (!c.rights.read) {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    }
+
+    const ep_idx = capObjectToId(c.object) orelse {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    };
+    const ep = sched.getEndpoint(ep_idx) orelse {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    };
+
+    if (buf_ptr != 0 and !isValidUserRange(buf_ptr, ipc.MAX_PAYLOAD)) {
+        frame[31] = E_BADARG;
+        frame[32] = @as(u64, cap.CAP_NULL);
+        return E_BADARG;
+    }
+
+    const msg = ep.recv(tag_filter) orelse {
+        // Block the calling thread until a message arrives
+        const thread = sched.global.getThread(thread_id) orelse {
+            frame[31] = E_AGAIN;
+            frame[32] = @as(u64, cap.CAP_NULL);
+            return E_AGAIN;
+        };
+        thread.blocked_ep = ep_idx;
+        sched.global.blockCurrent();
+        frame[31] = E_AGAIN;
+        frame[32] = @as(u64, cap.CAP_NULL);
+        return E_AGAIN;
+    };
+
+    if (buf_ptr != 0 and msg.payload_len > 0) {
+        const dst: [*]u8 = @ptrFromInt(buf_ptr);
+        for (0..msg.payload_len) |i| {
+            dst[i] = msg.payload[i];
+        }
+    }
+
     frame[31] = @as(u64, msg.payload_len);
     frame[32] = if (msg.cap_count > 0)
         @as(u64, msg.caps[0])

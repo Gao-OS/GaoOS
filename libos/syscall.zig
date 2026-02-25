@@ -210,6 +210,27 @@ pub fn ipcRecvCap(ep_cap: u32, buf: [*]u8, tag_filter: u64) RecvCapResult {
     return .{ .payload_len = len, .cap_idx = @truncate(cap_val) };
 }
 
+/// Blocking receive: same as ipcRecv but blocks if no message is available.
+/// User-space wrapper retries after wakeup since the kernel returns E_AGAIN
+/// when it blocks, and the thread resumes once a message is enqueued.
+pub fn ipcRecvBlock(ep_cap: u32, buf: [*]u8, tag_filter: u64) RecvResult {
+    while (true) {
+        var len: i64 = undefined;
+        var tag: u64 = undefined;
+        asm volatile ("svc #0"
+            : [x0] "={x0}" (len),
+              [x1] "={x1}" (tag),
+            : [arg0] "{x0}" (@as(u64, ep_cap)),
+              [arg1] "{x1}" (@intFromPtr(buf)),
+              [arg2] "{x2}" (tag_filter),
+              [x8] "{x8}" (@as(u64, 21)),
+            : .{ .memory = true }
+        );
+        // E_AGAIN (-7) means we were blocked and woken up — retry
+        if (len != -7) return .{ .payload_len = len, .tag = tag };
+    }
+}
+
 pub fn threadReap(thread_cap: u32) i64 {
     return asm volatile ("svc #0"
         : [ret] "={x0}" (-> i64),

@@ -128,8 +128,8 @@ export fn exception_handler(type_id: u64, frame: [*]u64) callconv(.{ .aarch64_aa
             const syscall_num = frame[6]; // x8
             syscall.dispatch(sched.global.current, frame);
 
-            // Yield and exit trigger an immediate reschedule
-            if (syscall_num == syscall.SYS_YIELD or syscall_num == syscall.SYS_EXIT) {
+            // Yield, exit, and blocking recv trigger an immediate reschedule
+            if (syscall_num == syscall.SYS_YIELD or syscall_num == syscall.SYS_EXIT or syscall_num == syscall.SYS_IPC_RECV_BLOCK) {
                 const old_id = sched.global.current;
                 if (sched.global.schedule()) |next| {
                     if (next.id != old_id) {
