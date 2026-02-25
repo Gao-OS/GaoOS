@@ -1863,6 +1863,23 @@ test "sysIpcRecvCapBlock rejects endpoint cap without read right" {
     try testing.expectEqual(E_BADCAP, result);
 }
 
+test "sysCapDerive rejects non-existent cap index" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Cap index 100 was never allocated — InvalidCapability error path
+    const read_only: u8 = @bitCast(cap.Rights{ .read = true });
+    try testing.expectEqual(E_BADCAP, sysCapDerive(tid, 100, read_only));
+}
+
+test "sysCapRead rejects deleted cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    // Delete the cap (not free the frame) — lookup should now return null
+    _ = sysCapDelete(tid, frame_cap);
+    try testing.expectEqual(E_BADCAP, sysCapRead(tid, frame_cap));
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');
