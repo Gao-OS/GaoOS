@@ -585,3 +585,29 @@ test "isFull and isEmpty report correctly" {
     try testing.expect(!ep.isFull());
     try testing.expect(!ep.isEmpty());
 }
+
+test "selective receive can drain all messages of the same tag" {
+    var ep = Endpoint{};
+    const TAG: u64 = 99;
+
+    // Enqueue 3 tagged + 1 different
+    for (0..3) |i| {
+        try ep.send(Message.init(TAG, "a"), null, null);
+        _ = i;
+    }
+    try ep.send(Message.init(1, "other"), null, null);
+
+    // Selectively drain all TAG messages
+    for (0..3) |_| {
+        const m = ep.recv(TAG);
+        try testing.expect(m != null);
+        try testing.expectEqual(TAG, m.?.tag);
+    }
+
+    // Only the untagged message remains
+    try testing.expect(ep.recv(TAG) == null);
+    const rem = ep.recv(TAG_ANY);
+    try testing.expect(rem != null);
+    try testing.expectEqual(@as(u64, 1), rem.?.tag);
+    try testing.expect(ep.isEmpty());
+}

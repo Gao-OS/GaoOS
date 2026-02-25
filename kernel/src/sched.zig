@@ -621,3 +621,31 @@ test "unblock on non-blocked thread is a no-op" {
     s.unblock(5);
     try testing.expectEqual(ThreadState.free, s.threads[5].state);
 }
+
+test "blockCurrent is a no-op when no current thread" {
+    var s = Scheduler{};
+    _ = try s.spawn();
+    // has_current starts false — blockCurrent must not modify any thread state
+    try testing.expect(!s.has_current);
+    s.blockCurrent(); // must not crash or change state
+    try testing.expectEqual(ThreadState.ready, s.threads[0].state);
+}
+
+test "resetCapTable clears all slots and count" {
+    const id = 0;
+    resetCapTable(id);
+    try testing.expectEqual(@as(u32, 0), cap_tables[id].count);
+    for (cap_tables[id].slots) |slot| {
+        try testing.expect(!slot.valid);
+    }
+
+    // Populate via resetCapTable + manual fill
+    cap_tables[id].count = 3;
+    cap_tables[id].slots[0].valid = true;
+    cap_tables[id].slots[1].valid = true;
+
+    resetCapTable(id);
+    try testing.expectEqual(@as(u32, 0), cap_tables[id].count);
+    try testing.expect(!cap_tables[id].slots[0].valid);
+    try testing.expect(!cap_tables[id].slots[1].valid);
+}

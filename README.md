@@ -96,7 +96,7 @@ All workers done. System shutting down.
 - [ ] Phase 4 — BEAM integration
 - [ ] Phase 5 — Hardware bring-up on physical Raspberry Pi
 
-157 host unit tests (cap: 21, ipc: 21, sched: 22, syscall: 48, mmu: 12, frame: 8, fault: 9) + 37-marker QEMU integration test.
+162 host unit tests (cap: 21, ipc: 23, sched: 27, syscall: 58, mmu: 13, frame: 10, fault: 10) + 37-marker QEMU integration test.
 
 ## Documentation
 

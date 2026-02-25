@@ -164,6 +164,38 @@ test "alloc returns distinct addresses" {
     }
 }
 
+test "alloc order is lowest free index after fragmentation" {
+    var fa = FrameAllocator.init();
+    const a1 = try fa.alloc();
+    const a2 = try fa.alloc();
+    const a3 = try fa.alloc();
+
+    // Free the first and third, keep the second
+    try fa.free(a1);
+    try fa.free(a3);
+    try testing.expectEqual(TOTAL_FRAMES - 1, fa.free_count);
+
+    // Alloc should fill lowest free index first: a1, then a3
+    const r1 = try fa.alloc();
+    const r2 = try fa.alloc();
+    try testing.expectEqual(a1, r1);
+    try testing.expectEqual(a3, r2);
+    _ = a2;
+}
+
+test "free count recovers after exhaustion and partial free" {
+    var fa = FrameAllocator.init();
+    for (0..TOTAL_FRAMES) |_| _ = try fa.alloc();
+    try testing.expectEqual(@as(u32, 0), fa.free_count);
+
+    // Free one → exactly one slot available
+    try fa.free(USER_POOL_START);
+    try testing.expectEqual(@as(u32, 1), fa.free_count);
+    const got = try fa.alloc();
+    try testing.expectEqual(USER_POOL_START, got);
+    try testing.expectEqual(@as(u32, 0), fa.free_count);
+}
+
 test "free at pool boundaries" {
     var fa = FrameAllocator.init();
 
