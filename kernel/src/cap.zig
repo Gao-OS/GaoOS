@@ -277,3 +277,75 @@ test "rights intersection" {
     try testing.expect(result.read);
     try testing.expect(!result.write);
 }
+
+test "generation prevents stale index reuse" {
+    var table = CapabilityTable{};
+
+    const idx = try table.create(.frame, 0xA000, Rights.ALL);
+    const gen1 = table.lookup(idx).?.generation;
+
+    table.delete(idx);
+
+    // Re-create at same slot
+    const idx2 = try table.create(.frame, 0xB000, Rights.READ_ONLY);
+    try testing.expectEqual(idx, idx2);
+
+    // Generation has incremented
+    const gen2 = table.lookup(idx2).?.generation;
+    try testing.expect(gen2 > gen1);
+}
+
+test "derive from deleted cap returns error" {
+    var table = CapabilityTable{};
+
+    const idx = try table.create(.frame, 0xC000, Rights.ALL);
+    table.delete(idx);
+
+    const result = table.derive(idx, Rights.READ_ONLY);
+    try testing.expectError(error.InvalidCapability, result);
+}
+
+test "derive preserves cap type" {
+    var table = CapabilityTable{};
+
+    const idx = try table.create(.ipc_endpoint, 0xD000, Rights.ALL);
+    const derived = try table.derive(idx, Rights.READ_WRITE);
+
+    const d = table.lookup(derived).?;
+    try testing.expectEqual(CapabilityType.ipc_endpoint, d.cap_type);
+    try testing.expectEqual(@as(usize, 0xD000), d.object);
+}
+
+test "check on deleted cap returns false" {
+    var table = CapabilityTable{};
+
+    const idx = try table.create(.frame, 0xE000, Rights.ALL);
+    try testing.expect(table.check(idx, Rights.READ_ONLY));
+
+    table.delete(idx);
+    try testing.expect(!table.check(idx, Rights.READ_ONLY));
+}
+
+test "count tracks creates and deletes" {
+    var table = CapabilityTable{};
+    try testing.expectEqual(@as(u32, 0), table.count);
+
+    const a = try table.create(.frame, 0, Rights.ALL);
+    const b = try table.create(.frame, 1, Rights.ALL);
+    try testing.expectEqual(@as(u32, 2), table.count);
+
+    table.delete(a);
+    try testing.expectEqual(@as(u32, 1), table.count);
+
+    table.delete(b);
+    try testing.expectEqual(@as(u32, 0), table.count);
+}
+
+test "rights eql and isSubsetOf" {
+    try testing.expect(Rights.NONE.isSubsetOf(Rights.ALL));
+    try testing.expect(!Rights.ALL.isSubsetOf(Rights.NONE));
+    try testing.expect(Rights.READ_ONLY.isSubsetOf(Rights.READ_WRITE));
+    try testing.expect(!Rights.READ_WRITE.isSubsetOf(Rights.READ_ONLY));
+    try testing.expect(Rights.ALL.eql(Rights.ALL));
+    try testing.expect(!Rights.ALL.eql(Rights.READ_ONLY));
+}
