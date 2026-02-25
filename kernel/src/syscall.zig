@@ -239,7 +239,13 @@ fn sysCapDerive(thread_id: sched.ThreadId, src_cap_idx: cap.CapIndex, new_rights
 
 fn sysCapDelete(thread_id: sched.ThreadId, cap_idx: cap.CapIndex) u64 {
     const table = sched.getCapTable(thread_id) orelse return E_BADCAP;
-    if (table.lookup(cap_idx) == null) return E_BADCAP;
+    const c = table.lookup(cap_idx) orelse return E_BADCAP;
+
+    // If deleting a frame cap, free the underlying physical frame to prevent leaks
+    if (c.cap_type == .frame) {
+        frame_mod.global.free(@intCast(c.object)) catch {};
+    }
+
     table.delete(cap_idx);
     return E_OK;
 }
@@ -773,6 +779,11 @@ fn testSetup() sched.ThreadId {
     // Reset scheduler state
     sched.global = .{};
     frame_mod.global = frame_mod.FrameAllocator.init();
+    // Reset cap tables and endpoints for all threads to avoid cross-test leakage
+    for (0..sched.MAX_THREADS) |i| {
+        sched.resetCapTable(@intCast(i));
+        sched.resetEndpoint(@intCast(i));
+    }
     // Spawn a test thread
     const id = sched.global.spawn() catch unreachable;
     sched.global.threads[id].state = .running;
@@ -1192,6 +1203,97 @@ test "sysFramePhys rejects read without read right" {
     const derived: cap.CapIndex = @intCast(sysCapDerive(tid, frame_cap, write_only));
 
     try testing.expectEqual(E_BADCAP, sysFramePhys(tid, derived));
+}
+
+test "sysCapDelete on frame cap frees the physical frame" {
+    const tid = testSetup();
+    defer testTeardown();
+    const before = frame_mod.global.free_count;
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    try testing.expectEqual(before - 1, frame_mod.global.free_count);
+
+    // Delete via sysCapDelete (not sysFrameFree) — should still free the frame
+    try testing.expectEqual(E_OK, sysCapDelete(tid, frame_cap));
+    try testing.expectEqual(before, frame_mod.global.free_count);
+}
+
+test "sysIpcRecvCapBlock blocks on empty endpoint" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    sched.global.threads[tid].state = .running;
+    sched.global.current = tid;
+    sched.global.has_current = true;
+
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvCapBlock(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(E_AGAIN, result);
+    try testing.expectEqual(sched.ThreadState.blocked, sched.global.threads[tid].state);
+    try testing.expectEqual(@as(u64, cap.CAP_NULL), frame_buf[32]);
+}
+
+test "sysIpcRecvCapBlock returns E_CLOSED on closed endpoint" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    const ep = sched.getEndpoint(tid).?;
+    ep.close();
+
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvCapBlock(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(E_CLOSED, result);
+}
+
+test "sysIpcSend and sysIpcRecv round-trip with tag and metadata" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Send with msg_ptr=0, len=0 but distinct tags to verify tag round-trip
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 42));
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 99));
+
+    // Receive first message — should get tag=42
+    var frame_buf: [34]u64 = undefined;
+    _ = sysIpcRecv(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(@as(u64, 0), frame_buf[31]); // payload_len
+    try testing.expectEqual(@as(u64, 42), frame_buf[32]); // tag
+
+    // Receive second message — should get tag=99
+    _ = sysIpcRecv(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(@as(u64, 0), frame_buf[31]);
+    try testing.expectEqual(@as(u64, 99), frame_buf[32]);
+
+    // Third recv — should be empty
+    const result = sysIpcRecv(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(E_AGAIN, result);
+}
+
+test "sysIpcSend returns E_FULL on full queue" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Fill the queue (16 messages)
+    for (0..16) |_| {
+        try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 0));
+    }
+
+    // 17th send should return E_FULL
+    try testing.expectEqual(E_FULL, sysIpcSend(tid, ep_cap, 0, 0, 0));
+}
+
+test "sysIpcSend returns E_CLOSED on closed endpoint" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    const ep = sched.getEndpoint(tid).?;
+    ep.close();
+
+    try testing.expectEqual(E_CLOSED, sysIpcSend(tid, ep_cap, 0, 0, 0));
 }
 
 fn putDec(val: u32) void {

@@ -3,7 +3,7 @@
 // Bitmap-based allocator managing the user-space memory pool.
 // All state is statically allocated — no heap, no hidden allocations.
 //
-// Pool: 0x400000–0x3FFFFFF (~60MB, 15104 frames of 4KB each).
+// Pool: 0x400000–0x3FFFFFF (~60MB, 15360 frames of 4KB each).
 // The first 4MB is reserved for page tables, kernel image, and initial user program.
 
 pub const FRAME_SIZE: u64 = 4096;

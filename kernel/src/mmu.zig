@@ -147,17 +147,22 @@ pub fn mapPage(
 }
 
 /// Unmap a 4KB page (mark invalid). Intermediate tables are not freed.
-pub fn unmapPage(l0_table: *PageTable, vaddr: VirtAddr) void {
+/// Returns false if the page was not mapped (missing intermediate table).
+pub fn unmapPage(l0_table: *PageTable, vaddr: VirtAddr) bool {
     const l0_idx = (vaddr >> 39) & 0x1FF;
     const l1_idx = (vaddr >> 30) & 0x1FF;
     const l2_idx = (vaddr >> 21) & 0x1FF;
     const l3_idx = (vaddr >> 12) & 0x1FF;
 
-    const l1_table: *PageTable = @ptrFromInt((l0_table[l0_idx].output_pa << 12));
-    const l2_table: *PageTable = @ptrFromInt((l1_table[l1_idx].output_pa << 12));
-    const l3_table: *PageTable = @ptrFromInt((l2_table[l2_idx].output_pa << 12));
+    if (l0_table[l0_idx].valid == 0) return false;
+    const l1_table: *PageTable = @ptrFromInt(@as(u64, l0_table[l0_idx].output_pa) << 12);
+    if (l1_table[l1_idx].valid == 0) return false;
+    const l2_table: *PageTable = @ptrFromInt(@as(u64, l1_table[l1_idx].output_pa) << 12);
+    if (l2_table[l2_idx].valid == 0) return false;
+    const l3_table: *PageTable = @ptrFromInt(@as(u64, l2_table[l2_idx].output_pa) << 12);
 
     l3_table[l3_idx].valid = 0;
+    return true;
 }
 
 /// Physical frame allocator: simple bitmap for contiguous physical memory.
@@ -185,13 +190,16 @@ pub const FrameAllocator = struct {
         return error.OutOfMemory;
     }
 
-    /// Free a physical frame.
+    /// Free a physical frame. Validates bounds and double-free.
     pub fn freeFrame(self: *FrameAllocator, paddr: PhysAddr) void {
         const frame_idx = paddr / PAGE_SIZE;
         const byte_idx = frame_idx / 64;
+        if (byte_idx >= self.bitmap.len) return;
         const bit_idx: u6 = @truncate(frame_idx % 64);
-        self.bitmap[byte_idx] &= ~(@as(u64, 1) << bit_idx);
-        self.used -= 1;
+        const mask = @as(u64, 1) << bit_idx;
+        if (self.bitmap[byte_idx] & mask == 0) return; // not allocated (double-free guard)
+        self.bitmap[byte_idx] &= ~mask;
+        if (self.used > 0) self.used -= 1;
     }
 };
 
@@ -376,8 +384,18 @@ test "unmapPage invalidates entry" {
     const l3: *PageTable = @ptrFromInt(@as(u64, l2[0].output_pa) << 12);
     try testing.expectEqual(@as(u1, 1), l3[1].valid);
 
-    unmapPage(l0, 0x1000);
+    try testing.expect(unmapPage(l0, 0x1000));
     try testing.expectEqual(@as(u1, 0), l3[1].valid);
+}
+
+test "unmapPage returns false for unmapped address" {
+    const l0_mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
+    defer std.heap.page_allocator.free(l0_mem);
+    @memset(l0_mem, 0);
+    const l0: *PageTable = @alignCast(@ptrCast(l0_mem.ptr));
+
+    // No pages mapped — should return false, not crash
+    try testing.expect(!unmapPage(l0, 0x1000));
 }
 
 test "mapPage reuses existing intermediate tables" {

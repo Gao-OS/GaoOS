@@ -95,7 +95,7 @@ User:      libos → user/init (imports eink_driver)
 - **cap.zig**: 256-slot capability table per thread with generation-based invalidation. Types: frame, aspace, thread, ipc_endpoint, irq, device. Rights: read, write, grant, revoke. `derive()` can only attenuate (remove rights), never escalate.
 - **ipc.zig**: Endpoints with 16-message ring buffer. Messages carry a tag (u64), 256-byte payload, and up to 4 capability slots. `recv()` supports tag-filtered selective receive (linear scan + reorder).
 - **sched.zig**: 64-thread round-robin scheduler. Thread states: free/ready/running/blocked/dead. Global arrays: `cap_tables[64]`, `endpoints[64]`. Timer preemption via `schedule()` called from IRQ handler. Singleton at `sched.global` (package-level `pub var`).
-- **frame.zig**: Bitmap physical frame allocator for user-space memory pool (0x400000–0x3FFFFFF, ~60MB, 15104 frames). Static bitmap array. Singleton at `frame.global`.
+- **frame.zig**: Bitmap physical frame allocator for user-space memory pool (0x400000–0x3FFFFFF, ~60MB, 15360 frames). Static bitmap array. Singleton at `frame.global`.
 - **fault.zig**: Fault notification protocol. When a thread dies, sends FaultMsg to supervisor's IPC endpoint with distinguished tag (0xDEAD_DEAD_DEAD_DEAD). Best-effort delivery.
 - **syscall.zig**: SVC from EL0 dispatched via ESR_EL1 exception class 0x15. Syscall number in x8, args in x0-x5. 23 syscalls: SYS_WRITE(0), SYS_EXIT(1), SYS_YIELD(2), SYS_CAP_READ(3), SYS_FRAME_ALLOC(4), SYS_FRAME_FREE(5), SYS_CAP_DERIVE(6), SYS_CAP_DELETE(7), SYS_FRAME_PHYS(8), SYS_IPC_SEND(9), SYS_IPC_RECV(10), SYS_EP_CREATE(11), SYS_THREAD_CREATE(12), SYS_THREAD_GRANT(13), SYS_IPC_SEND_WITH_TAG(14), SYS_EP_GRANT(15), SYS_SUPERVISOR_SET(16), SYS_IPC_SEND_CAP(17), SYS_IPC_RECV_CAP(18), SYS_THREAD_REAP(19), SYS_THREAD_KILL(20), SYS_IPC_RECV_BLOCK(21), SYS_IPC_RECV_CAP_BLOCK(22). Error codes: E_BADCAP(-1), E_BADARG(-2), E_BADSYS(-3), E_NOMEM(-4), E_FULL(-5), E_CLOSED(-6), E_AGAIN(-7). All capability object casts use `capObjectToId()` (checked, no kernel panic from bad cap values). All user pointers validated with `isValidUserRange()`.
 - **kernel/src/mmu.zig**: Portable page table walker (4-level, 4KB granule) + bitmap frame allocator. Host-testable.
@@ -146,7 +146,7 @@ Phase 1 (minimal kernel) and Phase 2 (LibOS prototype) are complete. Phase 3 (mu
 ### Completed Milestones
 
 - M2.0: README update
-- M2.1: Bitmap frame allocator (15104 frames, 0x400000-0x3FFFFFF)
+- M2.1: Bitmap frame allocator (15360 frames, 0x400000-0x3FFFFFF)
 - M2.2: Memory + capability management syscalls (5 new)
 - M2.3: LibOS library + first Zig user program
 - M2.4: IPC syscalls (send, recv, endpoint create, tagged send, endpoint grant)
@@ -158,7 +158,7 @@ Phase 1 (minimal kernel) and Phase 2 (LibOS prototype) are complete. Phase 3 (mu
 
 ### Test Summary
 
-- 113 host unit tests (cap: 20, ipc: 18, sched: 18, syscall: 33, mmu: 9, frame: 8, fault: 7)
+- 120 host unit tests (cap: 20, ipc: 18, sched: 18, syscall: 39, mmu: 10, frame: 8, fault: 7)
 - QEMU integration test (37 output markers validated)
 - CI pipeline: unit tests + cross-compile + QEMU integration
 
