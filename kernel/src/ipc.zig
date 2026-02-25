@@ -391,3 +391,53 @@ test "recv returns cap_count 0 when no cap sent" {
     const received = ep.recv(TAG_ANY).?;
     try testing.expectEqual(@as(u32, 0), received.cap_count);
 }
+
+test "ring buffer wraps correctly through multiple cycles" {
+    var ep = Endpoint{};
+
+    // Fill and drain 3 full cycles to exercise head/tail wrapping
+    for (0..3) |cycle| {
+        // Fill the queue
+        for (0..QUEUE_SIZE) |i| {
+            const tag: u64 = @intCast(cycle * QUEUE_SIZE + i);
+            try ep.send(Message.init(tag, "w"), null, null);
+        }
+        try testing.expectEqual(@as(u32, QUEUE_SIZE), ep.count);
+
+        // Drain and verify tags are correct
+        for (0..QUEUE_SIZE) |i| {
+            const expected_tag: u64 = @intCast(cycle * QUEUE_SIZE + i);
+            const msg = ep.recv(TAG_ANY).?;
+            try testing.expectEqual(expected_tag, msg.tag);
+        }
+        try testing.expectEqual(@as(u32, 0), ep.count);
+        try testing.expect(ep.recv(TAG_ANY) == null);
+    }
+}
+
+test "selective receive works after ring buffer wraps" {
+    var ep = Endpoint{};
+
+    // Advance head/tail past the initial position by filling and draining
+    for (0..QUEUE_SIZE - 2) |_| {
+        try ep.send(Message.init(999, "x"), null, null);
+    }
+    for (0..QUEUE_SIZE - 2) |_| {
+        _ = ep.recv(TAG_ANY);
+    }
+
+    // Now head/tail are near end of buffer. Add messages that will wrap.
+    try ep.send(Message.init(10, "a"), null, null);
+    try ep.send(Message.init(20, "b"), null, null); // wraps
+    try ep.send(Message.init(30, "c"), null, null);
+
+    // Selective receive tag=20 from wrapped queue
+    const m = ep.recv(20).?;
+    try testing.expectEqual(@as(u64, 20), m.tag);
+    try testing.expectEqualSlices(u8, "b", m.getPayload());
+
+    // Remaining: 10, 30
+    try testing.expectEqual(@as(u32, 2), ep.count);
+    try testing.expectEqual(@as(u64, 10), ep.recv(TAG_ANY).?.tag);
+    try testing.expectEqual(@as(u64, 30), ep.recv(TAG_ANY).?.tag);
+}
