@@ -23,6 +23,7 @@ const sys = libos.syscall;
 const io = libos.io;
 const ipc_lib = libos.ipc;
 const fault_lib = libos.fault;
+const thread_lib = libos.thread;
 const eink = @import("eink_driver");
 
 /// Extract a physical address from framePhys, returning null on error.
@@ -97,82 +98,32 @@ export fn user_main() void {
 
     // ── Spawn Worker A ───────────────────────────────────────────────
     io.println(UART_CAP, "Spawning Worker A...");
-    const a_stack_r = sys.frameAlloc();
-    if (a_stack_r < 0) {
-        io.println(UART_CAP, "FATAL: Worker A stack alloc failed");
+    const a = thread_lib.spawn(&worker_a) catch {
+        io.println(UART_CAP, "FATAL: Worker A spawn failed");
         return;
-    }
-    const a_stack_cap: u32 = @intCast(a_stack_r);
-    const a_stack_top: u64 = (checkedFramePhys(a_stack_cap) orelse {
-        io.println(UART_CAP, "FATAL: Worker A framePhys failed");
-        return;
-    }) + 4096;
-
-    const a_thread_r = sys.threadCreate(@intFromPtr(&worker_a), a_stack_top);
-    if (a_thread_r < 0) {
-        io.println(UART_CAP, "FATAL: Worker A thread create failed");
-        return;
-    }
-    const a_thread_cap: u32 = @intCast(a_thread_r);
-
+    };
     // cap[0]=UART, cap[1]=orch_endpoint in Worker A's table
-    _ = sys.threadGrant(a_thread_cap, UART_CAP);
-    _ = sys.threadGrant(a_thread_cap, ORCH_EP_CAP);
-
-    // Set orchestrator as Worker A's supervisor
-    _ = sys.supervisorSet(a_thread_cap, ORCH_EP_CAP);
+    _ = sys.threadGrant(a.thread_cap, UART_CAP);
+    _ = sys.threadGrant(a.thread_cap, ORCH_EP_CAP);
+    _ = sys.supervisorSet(a.thread_cap, ORCH_EP_CAP);
 
     // ── Spawn Worker B ───────────────────────────────────────────────
     io.println(UART_CAP, "Spawning Worker B...");
-    const b_stack_r = sys.frameAlloc();
-    if (b_stack_r < 0) {
-        io.println(UART_CAP, "FATAL: Worker B stack alloc failed");
+    const b = thread_lib.spawn(&worker_b) catch {
+        io.println(UART_CAP, "FATAL: Worker B spawn failed");
         return;
-    }
-    const b_stack_cap: u32 = @intCast(b_stack_r);
-    const b_stack_top: u64 = (checkedFramePhys(b_stack_cap) orelse {
-        io.println(UART_CAP, "FATAL: Worker B framePhys failed");
-        return;
-    }) + 4096;
-
-    const b_thread_r = sys.threadCreate(@intFromPtr(&worker_b), b_stack_top);
-    if (b_thread_r < 0) {
-        io.println(UART_CAP, "FATAL: Worker B thread create failed");
-        return;
-    }
-    const b_thread_cap: u32 = @intCast(b_thread_r);
-
-    // cap[0]=UART in Worker B's table
-    _ = sys.threadGrant(b_thread_cap, UART_CAP);
-
-    // Set orchestrator as Worker B's supervisor
-    _ = sys.supervisorSet(b_thread_cap, ORCH_EP_CAP);
+    };
+    _ = sys.threadGrant(b.thread_cap, UART_CAP);
+    _ = sys.supervisorSet(b.thread_cap, ORCH_EP_CAP);
 
     // ── Spawn E-Ink driver ───────────────────────────────────────────
     io.println(UART_CAP, "Spawning E-Ink driver...");
-    const e_stack_r = sys.frameAlloc();
-    if (e_stack_r < 0) {
-        io.println(UART_CAP, "FATAL: E-Ink stack alloc failed");
+    const e = thread_lib.spawn(&eink.einkMain) catch {
+        io.println(UART_CAP, "FATAL: E-Ink spawn failed");
         return;
-    }
-    const e_stack_cap: u32 = @intCast(e_stack_r);
-    const e_stack_top: u64 = (checkedFramePhys(e_stack_cap) orelse {
-        io.println(UART_CAP, "FATAL: E-Ink framePhys failed");
-        return;
-    }) + 4096;
-
-    const e_thread_r = sys.threadCreate(@intFromPtr(&eink.einkMain), e_stack_top);
-    if (e_thread_r < 0) {
-        io.println(UART_CAP, "FATAL: E-Ink thread create failed");
-        return;
-    }
-    const e_thread_cap: u32 = @intCast(e_thread_r);
-
-    // cap[0]=UART in E-Ink driver's table
-    _ = sys.threadGrant(e_thread_cap, UART_CAP);
-
-    // Set orchestrator as E-Ink driver's supervisor
-    _ = sys.supervisorSet(e_thread_cap, ORCH_EP_CAP);
+    };
+    _ = sys.threadGrant(e.thread_cap, UART_CAP);
+    _ = sys.supervisorSet(e.thread_cap, ORCH_EP_CAP);
 
     io.println(UART_CAP, "Workers spawned. Waiting for messages...");
 
@@ -218,7 +169,7 @@ export fn user_main() void {
 
     // ── Phase 2: forcefully kill Worker B (still spinning) ──────────
     io.println(UART_CAP, "Orchestrator: killing Worker B...");
-    const kill_rc = sys.threadKill(b_thread_cap);
+    const kill_rc = sys.threadKill(b.thread_cap);
     if (kill_rc < 0) {
         io.println(UART_CAP, "Orchestrator: threadKill failed!");
     } else {
@@ -244,14 +195,14 @@ export fn user_main() void {
     if (fault_count >= TOTAL_WORKERS) io.println(UART_CAP, "Fault supervision: OK");
 
     // Reap dead workers (all 3 have exited by now)
-    _ = sys.threadReap(a_thread_cap);
-    _ = sys.threadReap(b_thread_cap);
-    _ = sys.threadReap(e_thread_cap);
+    _ = sys.threadReap(a.thread_cap);
+    _ = sys.threadReap(b.thread_cap);
+    _ = sys.threadReap(e.thread_cap);
     io.println(UART_CAP, "Thread reap: OK");
 
     io.println(UART_CAP, "All workers done. System shutting down.");
 
-    _ = sys.frameFree(a_stack_cap);
-    _ = sys.frameFree(b_stack_cap);
-    _ = sys.frameFree(e_stack_cap);
+    _ = sys.frameFree(a.stack_cap);
+    _ = sys.frameFree(b.stack_cap);
+    _ = sys.frameFree(e.stack_cap);
 }
