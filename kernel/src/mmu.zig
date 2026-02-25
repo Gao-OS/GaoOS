@@ -446,3 +446,32 @@ test "freeFrame double-free is silent" {
     fa.freeFrame(a0);
     try testing.expectEqual(@as(usize, 0), fa.used);
 }
+
+test "mapPage returns error when allocator exhausted" {
+    // Use TestTablePool (capacity 8). Map two pages in different L0 regions
+    // to consume 6 slots (3 each). The 3rd path needs 3 more but only 2
+    // remain — L3 allocation fails, returning error.OutOfMemory.
+    var pool = TestTablePool.init();
+    defer pool.deinit();
+
+    const l0_mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
+    defer std.heap.page_allocator.free(l0_mem);
+    @memset(l0_mem, 0);
+    const l0: *PageTable = @alignCast(@ptrCast(l0_mem.ptr));
+
+    const flags = PageTableEntry{
+        .valid = 1, .type_table = 0, .attr_index = 0, .ns = 0,
+        .ap = 0, .sh = 0, .af = 1, .ng = 0, .output_pa = 0,
+    };
+
+    // L0 index = (vaddr >> 39) & 0x1FF
+    // Path A: l0_idx=0, vaddr=0x10000 — uses pool slots 0,1,2 (L1,L2,L3)
+    try mapPage(l0, 0x0000_0000_0001_0000, 0x2000, pool.allocator(), flags);
+    // Path B: l0_idx=1, vaddr=2^39 — uses pool slots 3,4,5
+    try mapPage(l0, 0x0000_0080_0000_0000, 0x3000, pool.allocator(), flags);
+    try testing.expectEqual(@as(usize, 6), pool.next);
+
+    // Path C: l0_idx=2, vaddr=2*2^39=2^40 — L1 uses slot 6, L2 uses slot 7, L3 hits OOM
+    const result = mapPage(l0, 0x0000_0100_0000_0000, 0x4000, pool.allocator(), flags);
+    try testing.expectError(error.OutOfMemory, result);
+}
