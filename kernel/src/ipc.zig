@@ -566,3 +566,22 @@ test "cap transfer with sparse CAP_NULL gaps" {
     try testing.expect(received.caps[2] != cap.CAP_NULL);
     try testing.expectEqual(@as(u32, 2), receiver.count);
 }
+
+test "isFull and isEmpty report correctly" {
+    var ep = Endpoint{};
+    try testing.expect(ep.isEmpty());
+    try testing.expect(!ep.isFull());
+
+    // Fill to capacity
+    for (0..QUEUE_SIZE) |i| {
+        try ep.send(Message.init(@intCast(i), "x"), null, null);
+        if (i < QUEUE_SIZE - 1) try testing.expect(!ep.isFull());
+    }
+    try testing.expect(ep.isFull());
+    try testing.expect(!ep.isEmpty());
+
+    // Drain one — no longer full
+    _ = ep.recv(TAG_ANY);
+    try testing.expect(!ep.isFull());
+    try testing.expect(!ep.isEmpty());
+}
