@@ -185,7 +185,7 @@ export fn user_main() void {
     const VOLUNTARY_WORKERS: u32 = 2; // Worker A + E-Ink exit voluntarily
 
     while (fault_count < VOLUNTARY_WORKERS) {
-        const rcap = sys.ipcRecvCapBlock(ORCH_EP_CAP, &buf, TAG_ANY);
+        const rcap = ipc_lib.recvWithCapBlocking(ORCH_EP_CAP, &buf);
         if (rcap.payload_len < 0) {
             io.println(UART_CAP, "Orchestrator: recv error!");
             break;
@@ -227,7 +227,7 @@ export fn user_main() void {
 
     // ── Phase 3: collect kill fault notification ──────────────────────
     {
-        const rcap = sys.ipcRecvCapBlock(ORCH_EP_CAP, &buf, TAG_ANY);
+        const rcap = ipc_lib.recvWithCapBlocking(ORCH_EP_CAP, &buf);
         if (rcap.payload_len >= 0) {
             const len: usize = @intCast(@as(u64, @bitCast(rcap.payload_len)));
             if (fault_lib.parse(buf[0..len])) |fm| {

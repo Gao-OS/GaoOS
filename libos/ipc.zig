@@ -53,3 +53,29 @@ pub fn recvWithCap(ep_cap: u32, buf: []u8) sys.RecvCapResult {
 pub fn recvTaggedWithCap(ep_cap: u32, tag: u64, buf: []u8) sys.RecvCapResult {
     return sys.ipcRecvCap(ep_cap, buf.ptr, tag);
 }
+
+// ─── Blocking variants ─────────────────────────────────────────────
+// These block the calling thread until a message arrives or the endpoint
+// is closed (E_CLOSED). Preferred for supervisor-style receive loops.
+
+/// Blocking receive. Sleeps until a message arrives.
+/// Returns E_CLOSED if the endpoint is closed and empty.
+pub fn recvBlocking(ep_cap: u32, buf: []u8) sys.RecvResult {
+    return sys.ipcRecvBlock(ep_cap, buf.ptr, TAG_ANY);
+}
+
+/// Blocking receive with tag filter.
+pub fn recvTaggedBlocking(ep_cap: u32, tag: u64, buf: []u8) sys.RecvResult {
+    return sys.ipcRecvBlock(ep_cap, buf.ptr, tag);
+}
+
+/// Blocking receive with capability transfer.
+/// Returns E_CLOSED if the endpoint is closed and empty.
+pub fn recvWithCapBlocking(ep_cap: u32, buf: []u8) sys.RecvCapResult {
+    return sys.ipcRecvCapBlock(ep_cap, buf.ptr, TAG_ANY);
+}
+
+/// Blocking receive with tag filter and capability transfer.
+pub fn recvTaggedWithCapBlocking(ep_cap: u32, tag: u64, buf: []u8) sys.RecvCapResult {
+    return sys.ipcRecvCapBlock(ep_cap, buf.ptr, tag);
+}
