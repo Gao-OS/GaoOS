@@ -1518,6 +1518,41 @@ test "sysEpGrant rejects without grant right" {
     try testing.expectEqual(E_BADCAP, sysEpGrant(tid, no_grant_ep, child_cap));
 }
 
+test "sysEpGrant returns E_FULL when target cap table is full" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Fill the child's cap table completely
+    const table = sched.getCapTable(tid).?;
+    const thread_val = table.lookup(child_cap).?;
+    const child_id = capObjectToId(thread_val.object).?;
+    const child_table = sched.getCapTable(child_id).?;
+    while (child_table.count < cap.MAX_CAPS) {
+        _ = child_table.create(.device, 0, cap.Rights.ALL) catch break;
+    }
+
+    try testing.expectEqual(E_FULL, sysEpGrant(tid, ep_cap, child_cap));
+}
+
+test "sysThreadGrant returns E_FULL when target cap table is full" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+
+    // Fill the child's cap table completely
+    const table = sched.getCapTable(tid).?;
+    const thread_val = table.lookup(child_cap).?;
+    const child_id = capObjectToId(thread_val.object).?;
+    const child_table = sched.getCapTable(child_id).?;
+    while (child_table.count < cap.MAX_CAPS) {
+        _ = child_table.create(.device, 0, cap.Rights.ALL) catch break;
+    }
+
+    try testing.expectEqual(E_FULL, sysThreadGrant(tid, child_cap, 0));
+}
+
 test "sysIpcRecvBlock succeeds immediately when message available" {
     const tid = testSetup();
     defer testTeardown();
