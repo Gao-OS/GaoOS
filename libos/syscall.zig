@@ -218,3 +218,12 @@ pub fn threadReap(thread_cap: u32) i64 {
         : .{ .memory = true }
     );
 }
+
+pub fn threadKill(thread_cap: u32) i64 {
+    return asm volatile ("svc #0"
+        : [ret] "={x0}" (-> i64),
+        : [x0] "{x0}" (@as(u64, thread_cap)),
+          [x8] "{x8}" (@as(u64, 20)),
+        : .{ .memory = true }
+    );
+}
