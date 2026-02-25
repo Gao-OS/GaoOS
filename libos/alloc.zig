@@ -23,6 +23,8 @@ pub const BumpAllocator = struct {
         if (size == 0) return null;
 
         const align_val = if (alignment > 0) alignment else 1;
+        // Alignment must be a power of 2
+        if (align_val & (align_val - 1) != 0) return null;
         const align_mask = align_val - 1;
 
         // Try to fit in current frame

@@ -11,6 +11,14 @@ pub const USER_POOL_START: u64 = 0x400000;
 pub const USER_POOL_END: u64 = 0x3FFFFFF;
 pub const TOTAL_FRAMES: u32 = @intCast((USER_POOL_END - USER_POOL_START + 1) / FRAME_SIZE);
 
+// User program region ends at 0x3FFFFF; frame pool must not overlap
+comptime {
+    const USER_PROG_END: u64 = 0x3FFFFF;
+    if (USER_POOL_START <= USER_PROG_END) {
+        @compileError("Frame pool overlaps with user program region");
+    }
+}
+
 const BITMAP_LEN: u32 = (TOTAL_FRAMES + 63) / 64;
 
 pub const FrameAllocator = struct {

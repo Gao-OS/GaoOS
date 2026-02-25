@@ -60,7 +60,7 @@ pub const Message = struct {
 /// An IPC endpoint: a bounded message queue.
 /// Each endpoint is a kernel object referenced by capabilities.
 pub const Endpoint = struct {
-    queue: [QUEUE_SIZE]Message = undefined,
+    queue: [QUEUE_SIZE]Message = [_]Message{Message{}} ** QUEUE_SIZE,
     head: u32 = 0, // Next slot to read
     tail: u32 = 0, // Next slot to write
     count: u32 = 0, // Messages currently queued
