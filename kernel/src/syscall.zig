@@ -40,6 +40,8 @@ pub const SYS_THREAD_GRANT = 13;
 pub const SYS_IPC_SEND_WITH_TAG = 14;
 pub const SYS_EP_GRANT = 15;
 pub const SYS_SUPERVISOR_SET = 16;
+pub const SYS_IPC_SEND_CAP = 17;
+pub const SYS_IPC_RECV_CAP = 18;
 
 // ─── Error codes (returned in x0) ──────────────────────────────────
 
@@ -79,12 +81,14 @@ pub fn dispatch(thread_id: sched.ThreadId, frame: [*]u64) void {
         SYS_IPC_SEND_WITH_TAG => sysIpcSend(thread_id, @truncate(arg0), arg1, arg2, arg3),
         SYS_EP_GRANT => sysEpGrant(thread_id, @truncate(arg0), @truncate(arg1)),
         SYS_SUPERVISOR_SET => sysSupervisorSet(thread_id, @truncate(arg0), @truncate(arg1)),
+        SYS_IPC_SEND_CAP => sysIpcSendCap(thread_id, @truncate(arg0), arg1, arg2, @truncate(arg3)),
+        SYS_IPC_RECV_CAP => sysIpcRecvCap(thread_id, frame, @truncate(arg0), arg1, arg2),
         else => E_BADSYS,
     };
 
     // Write return value back to x0 in the exception frame.
-    // (sysIpcRecv writes its own return values directly to frame)
-    if (syscall_num != SYS_IPC_RECV) {
+    // (sysIpcRecv and sysIpcRecvCap write their return values directly to frame)
+    if (syscall_num != SYS_IPC_RECV and syscall_num != SYS_IPC_RECV_CAP) {
         frame[31] = result;
     }
 
@@ -369,6 +373,94 @@ fn sysSupervisorSet(thread_id: sched.ThreadId, thread_cap_idx: cap.CapIndex, ep_
     target_thread.supervisor_ep = @intCast(ep_cap.object);
 
     return E_OK;
+}
+
+// ─── Cap delegation syscalls (M3.2) ──────────────────────────────────
+
+fn sysIpcSendCap(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u64, msg_len: u64, cap_to_send: cap.CapIndex) u64 {
+    const sender_table = sched.getCapTable(thread_id) orelse return E_BADCAP;
+
+    // Validate endpoint cap
+    const ep_cap_val = sender_table.lookup(ep_cap_idx) orelse return E_BADCAP;
+    if (ep_cap_val.cap_type != .ipc_endpoint) return E_BADCAP;
+    if (!ep_cap_val.rights.write) return E_BADCAP;
+
+    // Validate the capability to transfer (must exist and have grant right)
+    const src_cap = sender_table.lookup(cap_to_send) orelse return E_BADCAP;
+    if (!src_cap.rights.grant) return E_BADCAP;
+
+    const ep_idx: sched.ThreadId = @intCast(ep_cap_val.object);
+    const ep = sched.getEndpoint(ep_idx) orelse return E_BADCAP;
+
+    // Receiver's cap table: endpoint[i] is owned by thread i
+    const receiver_table = sched.getCapTable(ep_idx) orelse return E_BADCAP;
+
+    const len: u32 = @intCast(@min(msg_len, ipc.MAX_PAYLOAD));
+    var msg = ipc.Message{ .payload_len = len };
+    if (msg_ptr != 0 and len > 0) {
+        const src: [*]const u8 = @ptrFromInt(msg_ptr);
+        for (0..len) |i| {
+            msg.payload[i] = src[i];
+        }
+    }
+    msg.attachCap(cap_to_send) catch return E_BADARG;
+
+    ep.send(msg, sender_table, receiver_table) catch |err| {
+        return switch (err) {
+            error.QueueFull => E_FULL,
+            error.EndpointClosed => E_CLOSED,
+            error.InvalidCapability => E_BADCAP,
+            error.TableFull => E_FULL,
+        };
+    };
+    return E_OK;
+}
+
+fn sysIpcRecvCap(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex, buf_ptr: u64, tag_filter: u64) u64 {
+    const table = sched.getCapTable(thread_id) orelse {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    };
+    const c = table.lookup(ep_cap_idx) orelse {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    };
+    if (c.cap_type != .ipc_endpoint) {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    }
+    if (!c.rights.read) {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    }
+
+    const ep_idx: sched.ThreadId = @intCast(c.object);
+    const ep = sched.getEndpoint(ep_idx) orelse {
+        frame[31] = E_BADCAP;
+        return E_BADCAP;
+    };
+
+    const msg = ep.recv(tag_filter) orelse {
+        frame[31] = E_AGAIN;
+        frame[32] = @as(u64, cap.CAP_NULL);
+        return E_AGAIN;
+    };
+
+    // Copy payload to user buffer
+    if (buf_ptr != 0 and msg.payload_len > 0) {
+        const dst: [*]u8 = @ptrFromInt(buf_ptr);
+        for (0..msg.payload_len) |i| {
+            dst[i] = msg.payload[i];
+        }
+    }
+
+    // x0 = payload length, x1 = transferred cap index (CAP_NULL if none)
+    frame[31] = @as(u64, msg.payload_len);
+    frame[32] = if (msg.cap_count > 0)
+        @as(u64, msg.caps[0])
+    else
+        @as(u64, cap.CAP_NULL);
+    return @as(u64, msg.payload_len);
 }
 
 fn putDec(val: u32) void {

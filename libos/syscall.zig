@@ -176,3 +176,35 @@ pub fn supervisorSet(thread_cap: u32, ep_cap: u32) i64 {
         : .{ .memory = true }
     );
 }
+
+pub const RecvCapResult = struct {
+    payload_len: i64,
+    cap_idx: u32, // CAP_NULL (0xFFFFFFFF) if no cap transferred
+};
+
+pub fn ipcSendCap(ep_cap: u32, buf: [*]const u8, len: usize, cap_to_send: u32) i64 {
+    return asm volatile ("svc #0"
+        : [ret] "={x0}" (-> i64),
+        : [x0] "{x0}" (@as(u64, ep_cap)),
+          [x1] "{x1}" (@intFromPtr(buf)),
+          [x2] "{x2}" (@as(u64, len)),
+          [x3] "{x3}" (@as(u64, cap_to_send)),
+          [x8] "{x8}" (@as(u64, 17)),
+        : .{ .memory = true }
+    );
+}
+
+pub fn ipcRecvCap(ep_cap: u32, buf: [*]u8, tag_filter: u64) RecvCapResult {
+    var len: i64 = undefined;
+    var cap_val: u64 = undefined;
+    asm volatile ("svc #0"
+        : [x0] "={x0}" (len),
+          [x1] "={x1}" (cap_val),
+        : [arg0] "{x0}" (@as(u64, ep_cap)),
+          [arg1] "{x1}" (@intFromPtr(buf)),
+          [arg2] "{x2}" (tag_filter),
+          [x8] "{x8}" (@as(u64, 18)),
+        : .{ .memory = true }
+    );
+    return .{ .payload_len = len, .cap_idx = @truncate(cap_val) };
+}

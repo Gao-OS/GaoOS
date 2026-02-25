@@ -283,3 +283,47 @@ test "recv returns null on empty endpoint" {
     try testing.expect(ep.recv(TAG_ANY) == null);
     try testing.expect(ep.recv(42) == null);
 }
+
+test "send_cap: transferred cap index updated in received message" {
+    var ep = Endpoint{};
+    var sender = cap.CapabilityTable{};
+    var receiver = cap.CapabilityTable{};
+
+    // Pre-populate receiver so transferred cap lands at a different index
+    _ = try receiver.create(.device, 0, cap.Rights.READ_ONLY);
+    const src_idx = try sender.create(.frame, 0xCAFE, cap.Rights.ALL);
+
+    var msg = Message.init(99, "with cap");
+    try msg.attachCap(src_idx);
+    try ep.send(msg, &sender, &receiver);
+
+    // Sender no longer holds the cap
+    try testing.expect(sender.lookup(src_idx) == null);
+
+    const received = ep.recv(TAG_ANY).?;
+    try testing.expectEqual(@as(u32, 1), received.cap_count);
+    const new_idx = received.caps[0];
+    const transferred = receiver.lookup(new_idx).?;
+    try testing.expectEqual(cap.CapabilityType.frame, transferred.cap_type);
+    try testing.expectEqual(@as(usize, 0xCAFE), transferred.object);
+}
+
+test "send_cap with invalid cap index returns error" {
+    var ep = Endpoint{};
+    var sender = cap.CapabilityTable{};
+    var receiver = cap.CapabilityTable{};
+
+    var msg = Message.init(1, "bad cap");
+    try msg.attachCap(42); // index 42 not in sender table
+    const result = ep.send(msg, &sender, &receiver);
+    try testing.expectError(error.InvalidCapability, result);
+}
+
+test "recv returns cap_count 0 when no cap sent" {
+    var ep = Endpoint{};
+    const msg = Message.init(7, "no cap");
+    try ep.send(msg, null, null);
+
+    const received = ep.recv(TAG_ANY).?;
+    try testing.expectEqual(@as(u32, 0), received.cap_count);
+}

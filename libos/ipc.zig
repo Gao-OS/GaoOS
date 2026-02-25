@@ -36,3 +36,20 @@ pub fn createEndpoint() i64 {
 pub fn grantEndpoint(ep_cap: u32, thread_cap: u32) i64 {
     return sys.epGrant(ep_cap, thread_cap);
 }
+
+/// Send a message with a capability transfer. The cap is atomically moved
+/// from sender to receiver. Requires grant right on cap_to_send.
+pub fn sendWithCap(ep_cap: u32, data: []const u8, cap_to_send: u32) i64 {
+    return sys.ipcSendCap(ep_cap, data.ptr, data.len, cap_to_send);
+}
+
+/// Receive a message and any transferred capability.
+/// Returns payload_len and cap_idx (CAP_NULL = 0xFFFFFFFF if no cap).
+pub fn recvWithCap(ep_cap: u32, buf: []u8) sys.RecvCapResult {
+    return sys.ipcRecvCap(ep_cap, buf.ptr, TAG_ANY);
+}
+
+/// Receive with tag filter, also retrieving any transferred capability.
+pub fn recvTaggedWithCap(ep_cap: u32, tag: u64, buf: []u8) sys.RecvCapResult {
+    return sys.ipcRecvCap(ep_cap, buf.ptr, tag);
+}
