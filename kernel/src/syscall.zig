@@ -1637,6 +1637,26 @@ test "sysIpcSend rejects non-endpoint cap" {
     try testing.expectEqual(E_BADCAP, sysIpcSend(tid, frame_cap, 0, 0, 0));
 }
 
+test "sysIpcSend rejects endpoint cap without write right" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Create a read-only endpoint cap — write right is required to send
+    const table = sched.getCapTable(tid).?;
+    const ro_ep = table.create(.ipc_endpoint, @intCast(tid), cap.Rights{ .read = true }) catch unreachable;
+    try testing.expectEqual(E_BADCAP, sysIpcSend(tid, ro_ep, 0, 0, 0));
+}
+
+test "sysIpcRecv rejects endpoint cap without read right" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Create a write-only endpoint cap — read right is required to receive
+    const table = sched.getCapTable(tid).?;
+    const wo_ep = table.create(.ipc_endpoint, @intCast(tid), cap.Rights{ .write = true }) catch unreachable;
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecv(tid, &frame_buf, wo_ep, 0, 0);
+    try testing.expectEqual(E_BADCAP, result);
+}
+
 test "sysYield returns E_OK" {
     try testing.expectEqual(E_OK, sysYield());
 }
