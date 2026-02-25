@@ -1346,6 +1346,56 @@ test "sysEpCreate returns same endpoint on second call" {
     try testing.expectEqual(c1.object, c2.object); // same endpoint ID
 }
 
+test "sysFrameAlloc rolls back on full cap table" {
+    const tid = testSetup();
+    defer testTeardown();
+    const table = sched.getCapTable(tid).?;
+
+    // Fill cap table to capacity (slot 0 already has device cap from testSetup)
+    for (1..cap.MAX_CAPS) |_| {
+        _ = table.create(.device, 0, cap.Rights.ALL) catch break;
+    }
+    const before_free = frame_mod.global.free_count;
+
+    // sysFrameAlloc should fail with E_FULL and NOT leak the frame
+    try testing.expectEqual(E_FULL, sysFrameAlloc(tid));
+    try testing.expectEqual(before_free, frame_mod.global.free_count);
+}
+
+test "sysThreadKill rejects already-dead thread" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+
+    // Kill once — should succeed
+    try testing.expectEqual(E_OK, sysThreadKill(tid, child_cap));
+
+    // Kill again — should fail (already dead)
+    try testing.expectEqual(E_BADARG, sysThreadKill(tid, child_cap));
+}
+
+test "sysIpcSendCap rejects cap without grant right" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Spawn a receiver thread
+    const recv_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const table = sched.getCapTable(tid).?;
+    const recv_thread_val = table.lookup(recv_cap).?;
+    const recv_id = capObjectToId(recv_thread_val.object).?;
+
+    // Create sender's endpoint cap pointing to receiver
+    const sender_ep = table.create(.ipc_endpoint, @intCast(recv_id), cap.Rights.ALL) catch unreachable;
+
+    // Create a frame cap, derive read-only (no grant right)
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    const read_only: u8 = @bitCast(cap.Rights{ .read = true });
+    const derived: cap.CapIndex = @intCast(sysCapDerive(tid, frame_cap, read_only));
+
+    // Try to send derived cap (no grant right) — should fail
+    try testing.expectEqual(E_BADCAP, sysIpcSendCap(tid, sender_ep, 0, 0, derived));
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');
