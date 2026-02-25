@@ -69,9 +69,9 @@ MARKERS=(
     "[Worker A] sent frame cap"
     "[Worker A] exiting"
 
-    # Worker B
+    # Worker B (spins until killed)
     "[Worker B] hello"
-    "[Worker B] exiting"
+    "[Worker B] spinning"
 
     # E-Ink driver
     "[E-Ink] driver starting"
@@ -91,6 +91,8 @@ MARKERS=(
     "Orchestrator: received frame"
     "Orchestrator: fault from thread"
     "Cap delegation: OK"
+    "Orchestrator: killing Worker B"
+    "Thread kill: OK"
     "Fault supervision: OK"
     "Thread reap: OK"
     "All workers done"

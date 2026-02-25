@@ -6,6 +6,8 @@
 //   - Thread creation from user space
 //   - Capability delegation (frame cap transfer via IPC)
 //   - Fault supervision (orchestrator receives death notifications)
+//   - Blocking IPC receive (thread sleeps until message arrives)
+//   - Supervisor-initiated thread kill (BEAM supervision pattern)
 //   - E-ink user-space driver (mock SPI over UART)
 //
 // Structure:
@@ -13,7 +15,7 @@
 //     sets itself as supervisor for all, then drains its IPC endpoint.
 //
 //   Worker A: allocates a frame, sends it via SYS_IPC_SEND_CAP, exits.
-//   Worker B: prints a greeting, exits.
+//   Worker B: spins (yield loop) until forcefully killed by orchestrator.
 //   E-Ink:    runs Waveshare init/write/refresh/sleep sequence over mock SPI.
 
 const libos = @import("libos");
@@ -68,11 +70,15 @@ fn worker_a() callconv(.{ .aarch64_aapcs = .{} }) noreturn {
 }
 
 // ─── Worker B ────────────────────────────────────────────────────────
+// Worker B demonstrates supervisor-initiated kill: it loops forever
+// (yielding on each iteration) until the orchestrator kills it.
 
 fn worker_b() callconv(.{ .aarch64_aapcs = .{} }) noreturn {
     io.println(UART_CAP, "  [Worker B] hello!");
-    io.println(UART_CAP, "  [Worker B] exiting.");
-    sys.exit();
+    io.println(UART_CAP, "  [Worker B] spinning (waiting to be killed)...");
+    while (true) {
+        sys.yield();
+    }
 }
 
 // ─── Orchestrator (thread 0) ─────────────────────────────────────────
@@ -170,14 +176,15 @@ export fn user_main() void {
 
     io.println(UART_CAP, "Workers spawned. Waiting for messages...");
 
-    // ── Drain endpoint: cap message + fault notifications ──────────
-    // Uses blocking receive — the thread sleeps until a message arrives,
-    // eliminating the need for a poll+yield loop with timeout.
+    // ── Phase 1: collect voluntary exits (Worker A + E-Ink) ──────────
+    // Uses blocking receive — the thread sleeps until a message arrives.
+    // Worker B is spinning and will be killed later.
     var buf: [256]u8 = undefined;
     var fault_count: u32 = 0;
     var got_frame = false;
+    const VOLUNTARY_WORKERS: u32 = 2; // Worker A + E-Ink exit voluntarily
 
-    while (fault_count < TOTAL_WORKERS) {
+    while (fault_count < VOLUNTARY_WORKERS) {
         const rcap = sys.ipcRecvCapBlock(ORCH_EP_CAP, &buf, TAG_ANY);
         if (rcap.payload_len < 0) {
             io.println(UART_CAP, "Orchestrator: recv error!");
@@ -208,6 +215,32 @@ export fn user_main() void {
     }
 
     if (got_frame) io.println(UART_CAP, "Cap delegation: OK");
+
+    // ── Phase 2: forcefully kill Worker B (still spinning) ──────────
+    io.println(UART_CAP, "Orchestrator: killing Worker B...");
+    const kill_rc = sys.threadKill(b_thread_cap);
+    if (kill_rc < 0) {
+        io.println(UART_CAP, "Orchestrator: threadKill failed!");
+    } else {
+        io.println(UART_CAP, "Thread kill: OK");
+    }
+
+    // ── Phase 3: collect kill fault notification ──────────────────────
+    {
+        const rcap = sys.ipcRecvCapBlock(ORCH_EP_CAP, &buf, TAG_ANY);
+        if (rcap.payload_len >= 0) {
+            const len: usize = @intCast(@as(u64, @bitCast(rcap.payload_len)));
+            if (fault_lib.parse(buf[0..len])) |fm| {
+                fault_count += 1;
+                io.print(UART_CAP, "Orchestrator: fault from thread ");
+                io.putDec(UART_CAP, fm.thread_id);
+                io.print(UART_CAP, " (");
+                io.putDec(UART_CAP, fault_count);
+                io.println(UART_CAP, "/3)");
+            }
+        }
+    }
+
     if (fault_count >= TOTAL_WORKERS) io.println(UART_CAP, "Fault supervision: OK");
 
     // Reap dead workers (all 3 have exited by now)
