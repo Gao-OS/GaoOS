@@ -1635,6 +1635,45 @@ test "sysEpCreate returns E_FULL when cap table is full" {
     try testing.expectEqual(E_FULL, sysEpCreate(tid));
 }
 
+test "dispatch SYS_IPC_SEND always sends tag zero" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    var frame_buf: [34]u64 = undefined;
+    frame_buf[6] = SYS_IPC_SEND;
+    frame_buf[31] = @as(u64, ep_cap);
+    frame_buf[32] = 0; // msg_ptr
+    frame_buf[0] = 0; // msg_len
+    frame_buf[1] = 0xDEAD; // x3 = ignored for SYS_IPC_SEND
+    dispatch(tid, &frame_buf);
+
+    var recv_buf: [34]u64 = undefined;
+    _ = sysIpcRecv(tid, &recv_buf, ep_cap, 0, 0);
+    try testing.expectEqual(@as(u64, 0), recv_buf[32]); // tag always 0
+}
+
+test "dispatch SYS_IPC_SEND_WITH_TAG routes tag argument correctly" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Use dispatch to send via SYS_IPC_SEND_WITH_TAG (arg3 = tag)
+    var frame_buf: [34]u64 = undefined;
+    frame_buf[6] = SYS_IPC_SEND_WITH_TAG;
+    frame_buf[31] = @as(u64, ep_cap); // x0 = ep_cap_idx
+    frame_buf[32] = 0; // x1 = msg_ptr
+    frame_buf[0] = 0; // x2 = msg_len
+    frame_buf[1] = 0xCAFE; // x3 = tag
+    dispatch(tid, &frame_buf);
+
+    // The message must have arrived with tag=0xCAFE
+    var recv_buf: [34]u64 = undefined;
+    const r = sysIpcRecv(tid, &recv_buf, ep_cap, 0, 0);
+    try testing.expectEqual(@as(u64, 0), r); // 0 bytes received
+    try testing.expectEqual(@as(u64, 0xCAFE), recv_buf[32]); // tag preserved
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');
