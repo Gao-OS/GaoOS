@@ -9,6 +9,9 @@ qemu.log
 *.img
 *.elf
 
+# Object files
+*.o
+
 # Editor / IDE
 .vscode/
 .idea/
