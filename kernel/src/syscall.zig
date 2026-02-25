@@ -1803,6 +1803,45 @@ test "sysThreadCreate returns E_FULL when scheduler table is full" {
     try testing.expectEqual(E_FULL, sysThreadCreate(tid, 0x200000, 0x300000));
 }
 
+test "sysWrite rejects device cap without write right" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Create read-only device cap — write right is required for output
+    const table = sched.getCapTable(tid).?;
+    const ro_dev = table.create(.device, 0, cap.Rights{ .read = true }) catch unreachable;
+    try testing.expectEqual(E_BADCAP, sysWrite(tid, ro_dev, 0, 0));
+}
+
+test "sysIpcRecvBlock rejects endpoint cap without read right" {
+    const tid = testSetup();
+    defer testTeardown();
+    const table = sched.getCapTable(tid).?;
+    const wo_ep = table.create(.ipc_endpoint, @intCast(tid), cap.Rights{ .write = true }) catch unreachable;
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvBlock(tid, &frame_buf, wo_ep, 0, 0);
+    try testing.expectEqual(E_BADCAP, result);
+}
+
+test "sysIpcRecvCap rejects endpoint cap without read right" {
+    const tid = testSetup();
+    defer testTeardown();
+    const table = sched.getCapTable(tid).?;
+    const wo_ep = table.create(.ipc_endpoint, @intCast(tid), cap.Rights{ .write = true }) catch unreachable;
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvCap(tid, &frame_buf, wo_ep, 0, 0);
+    try testing.expectEqual(E_BADCAP, result);
+}
+
+test "sysIpcRecvCapBlock rejects endpoint cap without read right" {
+    const tid = testSetup();
+    defer testTeardown();
+    const table = sched.getCapTable(tid).?;
+    const wo_ep = table.create(.ipc_endpoint, @intCast(tid), cap.Rights{ .write = true }) catch unreachable;
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvCapBlock(tid, &frame_buf, wo_ep, 0, 0);
+    try testing.expectEqual(E_BADCAP, result);
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');
