@@ -175,6 +175,18 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(mmu_tests).step);
 
+    const host_uart = b.createModule(.{ .root_source_file = b.path("kernel/src/test_uart.zig"), .target = b.graph.host });
+    const host_frame = b.createModule(.{ .root_source_file = b.path("kernel/src/frame.zig"), .target = b.graph.host });
+    const host_fault = b.createModule(.{ .root_source_file = b.path("kernel/src/fault.zig"), .target = b.graph.host, .imports = &.{ .{ .name = "ipc", .module = host_ipc }, .{ .name = "cap", .module = host_cap }, .{ .name = "sched", .module = host_sched } } });
+    const syscall_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("kernel/src/syscall.zig"),
+            .target = b.graph.host,
+            .imports = &.{ .{ .name = "sched", .module = host_sched }, .{ .name = "cap", .module = host_cap }, .{ .name = "uart", .module = host_uart }, .{ .name = "frame", .module = host_frame }, .{ .name = "ipc", .module = host_ipc }, .{ .name = "fault", .module = host_fault } },
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(syscall_tests).step);
+
     // ── QEMU integration test ───────────────────────────────────────
 
     const qemu_test_step = b.step("qemu-test", "Run QEMU integration test (requires qemu-system-aarch64)");

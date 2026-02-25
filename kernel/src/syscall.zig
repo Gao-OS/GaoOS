@@ -14,6 +14,9 @@
 //   frame[2]  = x4,  frame[3]  = x5
 //   frame[6]  = x8  (syscall number)
 
+const builtin = @import("builtin");
+const is_test = builtin.is_test;
+
 const sched = @import("sched");
 const cap = @import("cap");
 const uart = @import("uart");
@@ -128,21 +131,34 @@ pub fn dispatch(thread_id: sched.ThreadId, frame: [*]u64) void {
     }
 
     if (syscall_num == SYS_EXIT) {
-        frame[29] = @intFromPtr(&idle_loop);
+        frame[29] = platform.idleLoopAddr();
         frame[30] = 0x3c5; // SPSR = EL1h, DAIF masked
     }
 }
 
-/// Idle loop that eret returns to after SYS_EXIT.
-export fn idle_loop() callconv(.{ .aarch64_aapcs = .{} }) noreturn {
-    uart.puts("Returning to kernel idle loop.\n");
-    while (true) {
-        asm volatile ("wfe");
-    }
-}
+// ─── Platform-specific symbols ──────────────────────────────────────
+// These are only available on aarch64. Host-target tests use stubs.
 
-// Assembly trampoline for new threads entering EL0 (in user_entry.S).
-extern const thread_entry_trampoline: u8;
+// ─── Platform-specific symbols (aarch64 only) ──────────────────────
+// Host-target tests never enter user space, so these are stubbed.
+
+const platform = if (is_test) struct {
+    // Stubs for host testing — never actually called/entered
+    var idle_loop_stub: u8 = 0;
+    fn idleLoopAddr() usize { return @intFromPtr(&idle_loop_stub); }
+    fn trampolineAddr() u64 { return 0; }
+} else struct {
+    // Real symbols linked from assembly files
+    export fn idle_loop() callconv(.{ .aarch64_aapcs = .{} }) noreturn {
+        uart.puts("Returning to kernel idle loop.\n");
+        while (true) {
+            asm volatile ("wfe");
+        }
+    }
+    extern const thread_entry_trampoline: u8;
+    fn idleLoopAddr() usize { return @intFromPtr(&idle_loop); }
+    fn trampolineAddr() u64 { return @intFromPtr(&thread_entry_trampoline); }
+};
 
 // ─── Phase 1 syscalls ────────────────────────────────────────────────
 
@@ -439,7 +455,7 @@ fn sysThreadCreate(thread_id: sched.ThreadId, entry_pc: u64, stack_ptr: u64) u64
     if (!isValidUserRange(stack_ptr -| 1, 1)) return E_BADARG;
     if (stack_ptr & 0xF != 0) return E_BADARG;
 
-    const new_id = sched.global.spawnAt(entry_pc, stack_ptr, @intFromPtr(&thread_entry_trampoline)) catch {
+    const new_id = sched.global.spawnAt(entry_pc, stack_ptr, platform.trampolineAddr()) catch {
         return E_FULL;
     };
 
@@ -758,6 +774,350 @@ test "capObjectToId rejects out-of-range values" {
     try testing.expect(capObjectToId(64) == null);
     try testing.expect(capObjectToId(0xFFFFFFFF) == null);
     try testing.expect(capObjectToId(0xDEAD) == null);
+}
+
+// ─── Syscall handler tests ───────────────────────────────────────────
+// These test the actual syscall functions with real kernel state (sched.global,
+// cap tables, IPC endpoints, frame allocator). The platform-specific parts
+// (idle_loop, trampoline) are stubbed out for host testing.
+
+fn testSetup() sched.ThreadId {
+    // Reset scheduler state
+    sched.global = .{};
+    frame_mod.global = frame_mod.FrameAllocator.init();
+    // Spawn a test thread
+    const id = sched.global.spawn() catch unreachable;
+    sched.global.threads[id].state = .running;
+    sched.global.current = id;
+    sched.global.has_current = true;
+    // Give it a device cap (UART) at slot 0
+    const table = sched.getCapTable(id).?;
+    _ = table.create(.device, 0, cap.Rights.ALL) catch unreachable;
+    return id;
+}
+
+fn testTeardown() void {
+    sched.global = .{};
+    frame_mod.global = frame_mod.FrameAllocator.init();
+}
+
+test "sysCapRead returns cap type" {
+    const tid = testSetup();
+    defer testTeardown();
+    // cap[0] is device
+    try testing.expectEqual(E_OK + @intFromEnum(cap.CapabilityType.device), sysCapRead(tid, 0));
+    // non-existent cap
+    try testing.expectEqual(E_BADCAP, sysCapRead(tid, 99));
+}
+
+test "sysFrameAlloc and sysFrameFree round-trip" {
+    const tid = testSetup();
+    defer testTeardown();
+    const result = sysFrameAlloc(tid);
+    // Should succeed: cap index returned (small positive number)
+    try testing.expect(result < 256);
+    const cap_idx: cap.CapIndex = @intCast(result);
+
+    // Verify it's a frame cap
+    try testing.expectEqual(E_OK + @intFromEnum(cap.CapabilityType.frame), sysCapRead(tid, cap_idx));
+
+    // Free it
+    try testing.expectEqual(E_OK, sysFrameFree(tid, cap_idx));
+
+    // Double-free should fail (cap was deleted)
+    try testing.expectEqual(E_BADCAP, sysFrameFree(tid, cap_idx));
+}
+
+test "sysFramePhys returns physical address" {
+    const tid = testSetup();
+    defer testTeardown();
+    const alloc_result = sysFrameAlloc(tid);
+    const cap_idx: cap.CapIndex = @intCast(alloc_result);
+
+    const phys = sysFramePhys(tid, cap_idx);
+    // Physical address should be in the frame pool range
+    try testing.expect(phys >= 0x400000);
+    try testing.expect(phys < 0x4000000);
+}
+
+test "sysFramePhys rejects non-frame cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    // cap[0] is device, not frame
+    try testing.expectEqual(E_BADCAP, sysFramePhys(tid, 0));
+}
+
+test "sysCapDerive attenuates rights" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Allocate a frame (has ALL rights)
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+
+    // Derive with read-only rights
+    const read_only: u8 = @bitCast(cap.Rights{ .read = true });
+    const derived = sysCapDerive(tid, frame_cap, read_only);
+    try testing.expect(derived < 256);
+
+    // Verify derived cap exists
+    const derived_idx: cap.CapIndex = @intCast(derived);
+    try testing.expectEqual(E_OK + @intFromEnum(cap.CapabilityType.frame), sysCapRead(tid, derived_idx));
+}
+
+test "sysCapDerive rejects rights escalation" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Create a read-only frame cap via derive
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    const read_only: u8 = @bitCast(cap.Rights{ .read = true });
+    const derived: cap.CapIndex = @intCast(sysCapDerive(tid, frame_cap, read_only));
+
+    // Try to escalate back to ALL — should fail
+    const all: u8 = @bitCast(cap.Rights.ALL);
+    try testing.expectEqual(E_BADCAP, sysCapDerive(tid, derived, all));
+}
+
+test "sysCapDelete removes capability" {
+    const tid = testSetup();
+    defer testTeardown();
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+
+    try testing.expectEqual(E_OK, sysCapDelete(tid, frame_cap));
+    // Now it's gone
+    try testing.expectEqual(E_BADCAP, sysCapRead(tid, frame_cap));
+}
+
+test "sysCapDelete rejects invalid cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    try testing.expectEqual(E_BADCAP, sysCapDelete(tid, 200));
+}
+
+test "sysEpCreate creates endpoint cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    const result = sysEpCreate(tid);
+    try testing.expect(result < 256);
+    const ep_cap: cap.CapIndex = @intCast(result);
+    try testing.expectEqual(E_OK + @intFromEnum(cap.CapabilityType.ipc_endpoint), sysCapRead(tid, ep_cap));
+}
+
+test "sysIpcSend and sysIpcRecv round-trip" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Send with empty payload and tag=42
+    const send_result = sysIpcSend(tid, ep_cap, 0, 0, 42);
+    try testing.expectEqual(E_OK, send_result);
+
+    // Receive
+    var frame_buf: [34]u64 = undefined;
+    const recv_result = sysIpcRecv(tid, &frame_buf, ep_cap, 0, 0);
+    // x0 = payload_len (0), x1 = tag (42)
+    try testing.expectEqual(@as(u64, 0), frame_buf[31]); // payload_len
+    try testing.expectEqual(@as(u64, 42), frame_buf[32]); // tag
+    _ = recv_result;
+}
+
+test "sysIpcRecv returns E_AGAIN when empty" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecv(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(E_AGAIN, result);
+}
+
+test "sysThreadCreate validates alignment" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Misaligned entry point (not 4-byte aligned)
+    try testing.expectEqual(E_BADARG, sysThreadCreate(tid, 0x200001, 0x201000));
+
+    // Misaligned stack (not 16-byte aligned)
+    try testing.expectEqual(E_BADARG, sysThreadCreate(tid, 0x200000, 0x201008));
+
+    // Entry outside user range
+    try testing.expectEqual(E_BADARG, sysThreadCreate(tid, 0x80000, 0x201000));
+}
+
+test "sysThreadCreate succeeds with valid args" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Valid: entry in user range, 4-byte aligned; stack in user range, 16-byte aligned
+    const result = sysThreadCreate(tid, 0x200000, 0x300000);
+    try testing.expect(result < 256); // returns cap index
+}
+
+test "sysThreadGrant transfers capability" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Create a child thread
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+
+    // Grant cap[0] (device/UART) to child
+    const result = sysThreadGrant(tid, child_cap, 0);
+    try testing.expectEqual(E_OK, result);
+
+    // Verify child has the cap — look up child's cap table
+    const table = sched.getCapTable(tid).?;
+    const thread_cap_val = table.lookup(child_cap).?;
+    const child_id = capObjectToId(thread_cap_val.object).?;
+    const child_table = sched.getCapTable(child_id).?;
+    // Child should have a device cap
+    const child_cap0 = child_table.lookup(0).?;
+    try testing.expectEqual(cap.CapabilityType.device, child_cap0.cap_type);
+}
+
+test "sysThreadGrant rejects without grant right" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+
+    // Create a read-only device cap (no grant right)
+    const table = sched.getCapTable(tid).?;
+    const ro_cap = table.create(.device, 0, cap.Rights{ .read = true }) catch unreachable;
+
+    // Try to grant the read-only cap — should fail (no grant right)
+    try testing.expectEqual(E_BADCAP, sysThreadGrant(tid, child_cap, ro_cap));
+}
+
+test "sysSupervisorSet configures supervisor endpoint" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    const result = sysSupervisorSet(tid, child_cap, ep_cap);
+    try testing.expectEqual(E_OK, result);
+
+    // Verify the child's supervisor_ep is set
+    const table = sched.getCapTable(tid).?;
+    const thread_cap_val = table.lookup(child_cap).?;
+    const child_id = capObjectToId(thread_cap_val.object).?;
+    const child_thread = sched.global.getThread(child_id).?;
+    try testing.expectEqual(tid, child_thread.supervisor_ep);
+}
+
+test "sysThreadKill kills target and notifies supervisor" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    _ = sysSupervisorSet(tid, child_cap, ep_cap);
+
+    // Kill the child
+    const result = sysThreadKill(tid, child_cap);
+    try testing.expectEqual(E_OK, result);
+
+    // Child should be dead
+    const table = sched.getCapTable(tid).?;
+    const thread_cap_val = table.lookup(child_cap).?;
+    const child_id = capObjectToId(thread_cap_val.object).?;
+    const child_thread = sched.global.getThread(child_id).?;
+    try testing.expectEqual(sched.ThreadState.dead, child_thread.state);
+
+    // Supervisor should have received a fault notification
+    const ep = sched.getEndpoint(tid).?;
+    const msg = ep.recv(0);
+    try testing.expect(msg != null);
+    try testing.expectEqual(@as(u64, 0xDEAD_DEAD_DEAD_DEAD), msg.?.tag);
+}
+
+test "sysThreadKill rejects self-kill" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Create a thread cap pointing to ourselves
+    const table = sched.getCapTable(tid).?;
+    const self_cap = table.create(.thread, @intCast(tid), cap.Rights.ALL) catch unreachable;
+
+    try testing.expectEqual(E_BADARG, sysThreadKill(tid, self_cap));
+}
+
+test "sysThreadReap cleans up dead thread" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+
+    // Get child ID before killing
+    const table = sched.getCapTable(tid).?;
+    const thread_cap_val = table.lookup(child_cap).?;
+    const child_id = capObjectToId(thread_cap_val.object).?;
+
+    // Kill then reap
+    _ = sysThreadKill(tid, child_cap);
+    const result = sysThreadReap(tid, child_cap);
+    try testing.expectEqual(E_OK, result);
+
+    // Thread should be free now
+    try testing.expectEqual(sched.ThreadState.free, sched.global.threads[child_id].state);
+    // Cap should be deleted
+    try testing.expect(table.lookup(child_cap) == null);
+}
+
+test "sysThreadReap rejects non-dead thread" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+
+    // Child is still ready, not dead
+    try testing.expectEqual(E_BADARG, sysThreadReap(tid, child_cap));
+}
+
+test "sysWrite rejects kernel pointer" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Try to write from a kernel address (below user range)
+    try testing.expectEqual(E_BADARG, sysWrite(tid, 0, 0x80000, 10));
+}
+
+test "sysWrite rejects non-device cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Allocate a frame cap — not a device cap
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    try testing.expectEqual(E_BADCAP, sysWrite(tid, frame_cap, 0, 0));
+}
+
+test "dispatch returns E_BADSYS for unknown syscall" {
+    const tid = testSetup();
+    defer testTeardown();
+    var frame_buf: [34]u64 = undefined;
+    frame_buf[6] = 999; // x8 = invalid syscall number
+    frame_buf[31] = 0; // x0
+    frame_buf[32] = 0; // x1
+    frame_buf[0] = 0; // x2
+    frame_buf[1] = 0; // x3
+    dispatch(tid, &frame_buf);
+    try testing.expectEqual(E_BADSYS, frame_buf[31]);
+}
+
+test "sysIpcSendCap transfers capability" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Spawn a receiver thread
+    const recv_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const table = sched.getCapTable(tid).?;
+    const recv_thread_val = table.lookup(recv_cap).?;
+    const recv_id = capObjectToId(recv_thread_val.object).?;
+
+    // Create endpoint for receiver
+    const recv_table = sched.getCapTable(recv_id).?;
+    const recv_ep_cap = recv_table.create(.ipc_endpoint, @intCast(recv_id), cap.Rights.ALL) catch unreachable;
+    _ = recv_ep_cap;
+
+    // Sender creates endpoint cap pointing to receiver's endpoint
+    const sender_ep = table.create(.ipc_endpoint, @intCast(recv_id), cap.Rights.ALL) catch unreachable;
+
+    // Allocate a frame to send
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+
+    // Send the frame cap
+    const result = sysIpcSendCap(tid, sender_ep, 0, 0, frame_cap);
+    try testing.expectEqual(E_OK, result);
 }
 
 fn putDec(val: u32) void {
