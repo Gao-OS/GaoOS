@@ -1396,6 +1396,45 @@ test "sysIpcSendCap rejects cap without grant right" {
     try testing.expectEqual(E_BADCAP, sysIpcSendCap(tid, sender_ep, 0, 0, derived));
 }
 
+test "sysIpcRecvCap returns transferred cap index" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Spawn receiver and set up cross-thread endpoint
+    const recv_cap_idx: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const table = sched.getCapTable(tid).?;
+    const recv_thread_val = table.lookup(recv_cap_idx).?;
+    const recv_id = capObjectToId(recv_thread_val.object).?;
+
+    // Sender creates ep cap pointing to receiver's endpoint
+    const sender_ep = table.create(.ipc_endpoint, @intCast(recv_id), cap.Rights.ALL) catch unreachable;
+
+    // Allocate frame to send
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+
+    // Send the frame cap
+    try testing.expectEqual(E_OK, sysIpcSendCap(tid, sender_ep, 0, 0, frame_cap));
+
+    // Sender's frame cap should be gone (transferred)
+    try testing.expect(table.lookup(frame_cap) == null);
+
+    // Receiver creates endpoint cap for itself to recv
+    const recv_table = sched.getCapTable(recv_id).?;
+    const recv_ep = recv_table.create(.ipc_endpoint, @intCast(recv_id), cap.Rights.ALL) catch unreachable;
+
+    // Recv the cap on receiver side
+    var frame_buf: [34]u64 = undefined;
+    _ = sysIpcRecvCap(recv_id, &frame_buf, recv_ep, 0, 0);
+
+    // frame_buf[32] should contain the new cap index in receiver's table
+    const received_cap: cap.CapIndex = @intCast(frame_buf[32]);
+    try testing.expect(received_cap != cap.CAP_NULL);
+
+    // Verify the transferred cap is a frame with the same physical address
+    const transferred = recv_table.lookup(received_cap).?;
+    try testing.expectEqual(cap.CapabilityType.frame, transferred.cap_type);
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');
