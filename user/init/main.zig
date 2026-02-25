@@ -23,6 +23,13 @@ const ipc_lib = libos.ipc;
 const fault_lib = libos.fault;
 const eink = @import("eink_driver");
 
+/// Extract a physical address from framePhys, returning null on error.
+fn checkedFramePhys(cap_idx: u32) ?u64 {
+    const result = sys.framePhys(cap_idx);
+    if (result < 0) return null;
+    return @bitCast(result);
+}
+
 const UART_CAP: u32 = 0;
 const ORCH_EP_CAP: u32 = 1; // Orchestrator's endpoint (in its own table)
 const WORKER_A_EP_CAP: u32 = 1; // Worker A's cap pointing to orchestrator's endpoint
@@ -43,9 +50,9 @@ fn worker_a() callconv(.{ .aarch64_aapcs = .{} }) noreturn {
         sys.exit();
     }
     const frame_cap: u32 = @intCast(frame_result);
-    const phys = sys.framePhys(frame_cap);
+    const phys = checkedFramePhys(frame_cap) orelse 0;
     io.print(UART_CAP, "  [Worker A] allocated frame 0x");
-    io.putHex(UART_CAP, @bitCast(phys));
+    io.putHex(UART_CAP, phys);
     io.print(UART_CAP, "\n");
 
     // Delegate frame cap to orchestrator via IPC
@@ -91,7 +98,10 @@ export fn user_main() void {
         return;
     }
     const a_stack_cap: u32 = @intCast(a_stack_r);
-    const a_stack_top: u64 = @as(u64, @bitCast(sys.framePhys(a_stack_cap))) + 4096;
+    const a_stack_top: u64 = (checkedFramePhys(a_stack_cap) orelse {
+        io.println(UART_CAP, "FATAL: Worker A framePhys failed");
+        return;
+    }) + 4096;
 
     const a_thread_r = sys.threadCreate(@intFromPtr(&worker_a), a_stack_top);
     if (a_thread_r < 0) {
@@ -115,7 +125,10 @@ export fn user_main() void {
         return;
     }
     const b_stack_cap: u32 = @intCast(b_stack_r);
-    const b_stack_top: u64 = @as(u64, @bitCast(sys.framePhys(b_stack_cap))) + 4096;
+    const b_stack_top: u64 = (checkedFramePhys(b_stack_cap) orelse {
+        io.println(UART_CAP, "FATAL: Worker B framePhys failed");
+        return;
+    }) + 4096;
 
     const b_thread_r = sys.threadCreate(@intFromPtr(&worker_b), b_stack_top);
     if (b_thread_r < 0) {
@@ -138,7 +151,10 @@ export fn user_main() void {
         return;
     }
     const e_stack_cap: u32 = @intCast(e_stack_r);
-    const e_stack_top: u64 = @as(u64, @bitCast(sys.framePhys(e_stack_cap))) + 4096;
+    const e_stack_top: u64 = (checkedFramePhys(e_stack_cap) orelse {
+        io.println(UART_CAP, "FATAL: E-Ink framePhys failed");
+        return;
+    }) + 4096;
 
     const e_thread_r = sys.threadCreate(@intFromPtr(&eink.einkMain), e_stack_top);
     if (e_thread_r < 0) {
@@ -179,9 +195,9 @@ export fn user_main() void {
         if (rcap.cap_idx != CAP_NULL) {
             // Capability transfer from Worker A
             if (!got_frame) {
-                const phys = sys.framePhys(rcap.cap_idx);
+                const phys = checkedFramePhys(rcap.cap_idx) orelse 0;
                 io.print(UART_CAP, "Orchestrator: received frame 0x");
-                io.putHex(UART_CAP, @bitCast(phys));
+                io.putHex(UART_CAP, phys);
                 io.println(UART_CAP, "");
                 _ = sys.frameFree(rcap.cap_idx);
                 got_frame = true;
