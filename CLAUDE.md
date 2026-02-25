@@ -81,9 +81,13 @@ gaoos-run zig-out/bin/kernel8.img -- -d int,cpu_reset
 
 ```
 Platform:  mmio ← gpio ← uart
-Kernel:    cap → ipc → sched → syscall
-                              → exception (also depends on uart, syscall, sched)
+                       ← spi (standalone, real hardware only)
+Kernel:    cap → ipc → sched → syscall (also depends on frame, fault)
+                              → exception (also depends on uart, syscall, sched, fault)
+           frame (standalone), fault (depends on ipc, sched)
            mmu (standalone), timer (standalone)
+User:      libos → user/init (imports eink_driver)
+           eink_driver → waveshare, spi_mock (mock SPI over UART)
 ```
 
 ### Core Kernel Modules
@@ -91,7 +95,9 @@ Kernel:    cap → ipc → sched → syscall
 - **cap.zig**: 256-slot capability table per thread with generation-based invalidation. Types: frame, aspace, thread, ipc_endpoint, irq, device. Rights: read, write, grant, revoke. `derive()` can only attenuate (remove rights), never escalate.
 - **ipc.zig**: Endpoints with 16-message ring buffer. Messages carry a tag (u64), 256-byte payload, and up to 4 capability slots. `recv()` supports tag-filtered selective receive (linear scan + reorder).
 - **sched.zig**: 64-thread round-robin scheduler. Thread states: free/ready/running/blocked/dead. Global arrays: `cap_tables[64]`, `endpoints[64]`. Timer preemption via `schedule()` called from IRQ handler. Singleton at `sched.global` (package-level `pub var`).
-- **syscall.zig**: SVC from EL0 dispatched via ESR_EL1 exception class 0x15. Syscall number in x8, args in x0-x2. Current syscalls: SYS_WRITE(0), SYS_EXIT(1), SYS_YIELD(2), SYS_CAP_READ(3). Error codes: `E_BADCAP(-1)`, `E_BADARG(-2)`, `E_BADSYS(-3)`.
+- **frame.zig**: Bitmap physical frame allocator for user-space memory pool (0x400000–0x3FFFFFF, ~60MB, 15104 frames). Static bitmap array. Singleton at `frame.global`.
+- **fault.zig**: Fault notification protocol. When a thread dies, sends FaultMsg to supervisor's IPC endpoint with distinguished tag (0xDEAD_DEAD_DEAD_DEAD). Best-effort delivery.
+- **syscall.zig**: SVC from EL0 dispatched via ESR_EL1 exception class 0x15. Syscall number in x8, args in x0-x5. 19 syscalls: SYS_WRITE(0), SYS_EXIT(1), SYS_YIELD(2), SYS_CAP_READ(3), SYS_FRAME_ALLOC(4), SYS_FRAME_FREE(5), SYS_CAP_DERIVE(6), SYS_CAP_DELETE(7), SYS_FRAME_PHYS(8), SYS_IPC_SEND(9), SYS_IPC_RECV(10), SYS_EP_CREATE(11), SYS_THREAD_CREATE(12), SYS_THREAD_GRANT(13), SYS_IPC_SEND_WITH_TAG(14), SYS_EP_GRANT(15), SYS_SUPERVISOR_SET(16), SYS_IPC_SEND_CAP(17), SYS_IPC_RECV_CAP(18). Error codes: E_BADCAP(-1), E_BADARG(-2), E_BADSYS(-3), E_NOMEM(-4), E_FULL(-5), E_CLOSED(-6), E_AGAIN(-7).
 - **kernel/src/mmu.zig**: Portable page table walker (4-level, 4KB granule) + bitmap frame allocator. Host-testable.
 - **kernel/arch/aarch64/mmu.zig**: Register-level MMU control (MAIR/TCR/SCTLR/TTBR). Not currently used — boot.S handles bootstrap inline.
 
@@ -103,7 +109,11 @@ Exception vectors in `vectors.S` (2KB-aligned at VBAR_EL1, 16 entries × 128 byt
 
 ### User-Space Programs
 
-`user_entry.S` contains the first user program. Must be position-independent (no literal pools — only `movz`/`movk` immediates and PC-relative branches). Copied to 0x200000 at boot. Entered via `eret` with ELR_EL1=0x200000, SPSR=0 (EL0).
+User programs are compiled as a separate ELF (user/init/main.zig), converted to raw binary via objcopy, and embedded in the kernel image via `@embedFile`. Copied to 0x200000 at boot, entered via `eret` with ELR_EL1=0x200000, SPSR=0 (EL0).
+
+**LibOS** (`libos/`): syscall wrappers (inline asm SVC), bump allocator over frame alloc, formatted I/O, IPC helpers, fault message parsing. Entry point in `libos/entry.S` → `user_main()`.
+
+**E-ink driver** (`user/eink/`): demonstrates exokernel driver model. User-space Waveshare e-ink protocol over mock SPI (UART output under QEMU). Runs as supervised thread alongside other workers.
 
 ## Implementation Gotchas
 
@@ -111,10 +121,43 @@ Exception vectors in `vectors.S` (2KB-aligned at VBAR_EL1, 16 entries × 128 byt
 - **NEON/FP disabled** in the Zig target (`.cpu_features_sub` in build.zig) to avoid 16-byte alignment faults from SIMD stores on naturally 8-byte aligned struct fields. Context zeroing uses field-by-field assignment (`zeroContext()`) for the same reason — never use `@memset` on Context structs.
 - **Exception frame layout**: vectors.S saves x0 at `frame[31]`, x1 at `frame[32]` (relocated from mini-push at entry), x2-x29 at `frame[0..27]`. Syscall reads x8 at `frame[6]`.
 - **User program must be position-independent**: only `movz`/`movk` immediates and PC-relative branches — no literal pools — because it is memcpy'd to 0x200000 at runtime.
+- **SP_EL0 in context switch**: context_switch.S saves/restores SP_EL0 (user stack pointer) alongside callee-saved regs. Required for correct multi-thread EL0 execution.
+- **Frame alloc grants ALL rights**: SYS_FRAME_ALLOC gives the caller ALL rights (including grant) so that frame caps can be delegated via IPC. Without grant right, SYS_IPC_SEND_CAP would reject the transfer.
+
+### Memory Map (Updated)
+
+| Address | Use |
+|---------|-----|
+| `0x70000-0x71FFF` | L1+L2 page tables (boot.S) |
+| `0x80000+` | Kernel image |
+| `0x200000-0x3FFFFF` | User-space program (EL0-accessible) |
+| `0x400000-0x3FFFFFF` | Frame allocator pool (~60MB, EL0-accessible) |
+| `0x3F000000+` | BCM2837 peripheral MMIO |
+| `0x3F201000` | PL011 UART base |
+| `0x3F204000` | SPI0 base |
+| `0x40000000+` | QA7 local peripherals |
 
 ## Project Status
 
-Phase 1 (minimal kernel) is complete: boot, UART, MMU bootstrap, capabilities, IPC, scheduler, syscalls, first EL0 user program. Next phases: LibOS prototype, multi-runtime, BEAM integration. See `docs/design/00_DESIGN.md` for the full roadmap and `docs/decisions/ADR-*.md` for architecture decisions.
+Phase 1 (minimal kernel) and Phase 2 (LibOS prototype) are complete. Phase 3 (multi-runtime) core features are implemented: fault notification, capability delegation, multi-runtime demo with e-ink driver. Remaining stretch goal: M2.7 (per-process address spaces). See `docs/design/00_DESIGN.md` for the full roadmap and `docs/decisions/ADR-*.md` for architecture decisions.
+
+### Completed Milestones
+
+- M2.0: README update
+- M2.1: Bitmap frame allocator (15104 frames, 0x400000-0x3FFFFFF)
+- M2.2: Memory + capability management syscalls (5 new)
+- M2.3: LibOS library + first Zig user program
+- M2.4: IPC syscalls (send, recv, endpoint create, tagged send, endpoint grant)
+- M2.5: Thread creation from user space (SYS_THREAD_CREATE, SYS_THREAD_GRANT)
+- M2.6: SPI platform driver + e-ink user-space driver (mock SPI over UART)
+- M3.1: Fault notification protocol (supervisor endpoint, FaultMsg)
+- M3.2: Capability delegation via IPC (SYS_IPC_SEND_CAP, SYS_IPC_RECV_CAP)
+- M3.3: Multi-runtime demo (orchestrator + workers + e-ink + cap transfer + fault supervision)
+
+### Test Summary
+
+- 42 host unit tests (cap: 9, ipc: 12, sched: 9, frame: 6, fault: 6)
+- QEMU integration test (34 output markers validated)
 
 ## Code Conventions
 
