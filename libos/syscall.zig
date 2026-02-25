@@ -2,6 +2,15 @@
 //
 // Convention: x8 = syscall number, x0-x5 = args, x0 = return value.
 
+// ─── Error codes (negative return values) ────────────────────────
+pub const E_BADCAP: i64 = -1; // Invalid or insufficient capability
+pub const E_BADARG: i64 = -2; // Invalid argument
+pub const E_BADSYS: i64 = -3; // Unknown syscall number
+pub const E_NOMEM: i64 = -4; // Out of memory (frame allocator exhausted)
+pub const E_FULL: i64 = -5; // Queue or table full
+pub const E_CLOSED: i64 = -6; // Endpoint closed (owner died)
+pub const E_AGAIN: i64 = -7; // No matching message (non-blocking recv)
+
 pub fn write(cap_idx: u32, buf: [*]const u8, len: usize) i64 {
     return asm volatile ("svc #0"
         : [ret] "={x0}" (-> i64),
