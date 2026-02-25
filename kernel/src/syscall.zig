@@ -1694,6 +1694,16 @@ test "sysIpcRecvBlock returns E_BADARG for kernel-space buf_ptr" {
     try testing.expectEqual(E_BADARG, result);
 }
 
+test "sysIpcRecvCapBlock returns E_BADARG for kernel-space buf_ptr" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    _ = sysIpcSend(tid, ep_cap, 0, 0, 1);
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvCapBlock(tid, &frame_buf, ep_cap, 0x80000, 0);
+    try testing.expectEqual(E_BADARG, result);
+}
+
 test "sysEpCreate returns E_FULL when cap table is full" {
     const tid = testSetup();
     defer testTeardown();
