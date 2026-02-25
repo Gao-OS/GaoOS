@@ -1090,6 +1090,29 @@ test "dispatch returns E_BADSYS for unknown syscall" {
     try testing.expectEqual(E_BADSYS, frame_buf[31]);
 }
 
+test "dispatch preserves recv frame writes (does not clobber x0/x1)" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Send a message so recv succeeds
+    _ = sysIpcSend(tid, ep_cap, 0, 0, 0xBEEF);
+
+    // Call dispatch with SYS_IPC_RECV
+    var frame_buf: [34]u64 = undefined;
+    frame_buf[6] = SYS_IPC_RECV; // x8 = syscall number
+    frame_buf[31] = @as(u64, ep_cap); // x0 = ep_cap_idx
+    frame_buf[32] = 0; // x1 = buf_ptr (null)
+    frame_buf[0] = 0; // x2 = tag_filter (TAG_ANY)
+    frame_buf[1] = 0; // x3
+    dispatch(tid, &frame_buf);
+
+    // dispatch must NOT overwrite frame[31] — recv handlers write directly
+    // frame[31] = payload_len, frame[32] = tag
+    try testing.expectEqual(@as(u64, 0), frame_buf[31]); // payload_len (empty payload)
+    try testing.expectEqual(@as(u64, 0xBEEF), frame_buf[32]); // tag
+}
+
 test "sysIpcSendCap transfers capability" {
     const tid = testSetup();
     defer testTeardown();
