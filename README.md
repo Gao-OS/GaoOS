@@ -72,7 +72,7 @@ qemu-system-aarch64 -M raspi3b -kernel zig-out/bin/kernel8.img -serial stdio -di
 GaoOS is in early development.
 
 - [x] Phase 0 — Project scaffolding, toolchain validation
-- [ ] Phase 1 — Minimal kernel (boot, UART, MMU, capabilities, IPC, scheduler)
+- [x] Phase 1 — Minimal kernel (boot, UART, MMU, capabilities, IPC, scheduler)
 - [ ] Phase 2 — LibOS prototype (user-space allocator, e-ink driver)
 - [ ] Phase 3 — Multi-runtime (capability delegation, fault supervision)
 - [ ] Phase 4 — BEAM integration
