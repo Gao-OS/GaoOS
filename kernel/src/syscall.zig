@@ -360,6 +360,12 @@ fn sysIpcRecvBlock(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.Cap
     }
 
     const msg = ep.recv(tag_filter) orelse {
+        // Closed endpoint with no pending messages — return E_CLOSED
+        // so the caller doesn't block forever waiting for a dead sender.
+        if (ep.closed) {
+            frame[31] = E_CLOSED;
+            return E_CLOSED;
+        }
         // No message available — block the calling thread.
         // The exception handler will reschedule. When a send to this
         // endpoint later unblocks us, user space retries the recv.
@@ -670,6 +676,12 @@ fn sysIpcRecvCapBlock(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.
     }
 
     const msg = ep.recv(tag_filter) orelse {
+        // Closed endpoint with no pending messages — return E_CLOSED
+        if (ep.closed) {
+            frame[31] = E_CLOSED;
+            frame[32] = @as(u64, cap.CAP_NULL);
+            return E_CLOSED;
+        }
         // Block the calling thread until a message arrives
         const thread = sched.global.getThread(thread_id) orelse {
             frame[31] = E_AGAIN;

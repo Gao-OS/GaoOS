@@ -190,6 +190,9 @@ pub const Scheduler = struct {
         thread.state = .dead;
         thread.blocked_ep = THREAD_NONE;
         endpoints[id].close();
+        // Wake any threads blocked on this thread's endpoint.
+        // They will see E_CLOSED on retry instead of blocking forever.
+        self.wakeBlockedRecv(id);
     }
 
     pub fn reap(self: *Scheduler, id: ThreadId) void {
@@ -445,6 +448,24 @@ test "kill clears blocked_ep" {
     s.kill(t0);
     try testing.expectEqual(ThreadState.dead, s.threads[t0].state);
     try testing.expectEqual(THREAD_NONE, s.threads[t0].blocked_ep);
+}
+
+test "kill wakes threads blocked on dying thread endpoint" {
+    var s = Scheduler{};
+    const owner = try s.spawn(); // thread 0 owns endpoint 0
+    const waiter = try s.spawn(); // thread 1 blocked on endpoint 0
+
+    _ = s.schedule(); // owner running
+    _ = s.schedule(); // waiter running
+
+    // Block waiter on owner's endpoint
+    s.threads[waiter].blocked_ep = owner;
+    s.threads[waiter].state = .blocked;
+
+    // Kill the owner — should wake the waiter
+    s.kill(owner);
+    try testing.expectEqual(ThreadState.ready, s.threads[waiter].state);
+    try testing.expectEqual(THREAD_NONE, s.threads[waiter].blocked_ep);
 }
 
 test "wakeBlockedRecv ignores threads on other endpoints" {
