@@ -38,7 +38,6 @@ const ORCH_EP_CAP: u32 = 1; // Orchestrator's endpoint (in its own table)
 const WORKER_A_EP_CAP: u32 = 1; // Worker A's cap pointing to orchestrator's endpoint
 
 const CAP_NULL: u32 = 0xFFFFFFFF;
-const TAG_ANY: u64 = 0;
 const TOTAL_WORKERS: u32 = 3;
 
 // ─── Worker A ────────────────────────────────────────────────────────

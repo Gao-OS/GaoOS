@@ -209,7 +209,7 @@ pub const Scheduler = struct {
         thread.blocked_ep = THREAD_NONE;
         resetCapTable(id);
         resetEndpoint(id);
-        self.count -= 1;
+        if (self.count > 0) self.count -= 1;
     }
 
     pub fn blockCurrent(self: *Scheduler) void {
@@ -480,6 +480,20 @@ test "wakeBlockedRecv ignores threads on other endpoints" {
     // Wake for endpoint 3 — should not wake t0
     s.wakeBlockedRecv(3);
     try testing.expectEqual(ThreadState.blocked, s.threads[t0].state);
+}
+
+test "reap is idempotent and count does not underflow" {
+    var s = Scheduler{};
+    const id = try s.spawn();
+    try testing.expectEqual(@as(u32, 1), s.count);
+
+    s.kill(id);
+    s.reap(id);
+    try testing.expectEqual(@as(u32, 0), s.count);
+
+    // Second reap on now-free thread is a no-op
+    s.reap(id);
+    try testing.expectEqual(@as(u32, 0), s.count);
 }
 
 test "per-thread cap table and endpoint" {
