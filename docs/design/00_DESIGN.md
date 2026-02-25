@@ -40,9 +40,10 @@ Every kernel object is accessed exclusively through capabilities. A capability i
 
 ```
 Capability {
-    type:    CapabilityType,   // frame, aspace, thread, ipc_endpoint, irq, device
-    object:  *anyopaque,       // pointer to kernel object
-    rights:  AccessRights,     // read, write, grant, revoke (bitmask)
+    cap_type:   CapabilityType,  // frame, aspace, thread, ipc_endpoint, irq, device
+    object:     usize,           // opaque handle: ThreadId, frame address, etc.
+    rights:     Rights,          // read, write, grant, revoke (bitmask)
+    generation: u32,             // monotonically increasing; prevents stale index reuse
 }
 ```
 
@@ -79,9 +80,14 @@ Message {
 ### 2.4 Fault Notification
 
 When a thread dies, the kernel:
-1. Invalidates all capabilities held by the thread
-2. Frees resources only referenced by the thread
+1. Closes the thread's IPC endpoint (no more sends accepted)
+2. Wakes threads blocked on that endpoint (they receive E_CLOSED)
 3. Sends a fault message to the thread's registered supervisor endpoint
+
+The dead thread's cap table and resources are cleaned up lazily when the
+supervisor calls SYS_THREAD_REAP. This is the exokernel policy: the kernel
+provides the mechanism (death notification), the supervisor provides the
+policy (what to do with the dead thread's resources).
 
 This maps directly to BEAM supervision trees. An OTP supervisor is a thread whose
 IPC endpoint receives death notifications from its children.
