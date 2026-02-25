@@ -19,6 +19,7 @@ jobs:
         run: zig build
 
   qemu-test:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
