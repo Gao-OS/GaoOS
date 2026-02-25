@@ -1,8 +1,11 @@
 // ARM64 Exception Handling
 //
-// This is the debuggability foundation — every future bug goes through here.
-// Handlers print diagnostic info (exception type, ESR, ELR, FAR) and halt.
-// Future phases will route exceptions to user-space fault handlers.
+// Dispatches all 16 ARM64 exception vectors. Fast paths:
+//   - IRQ (types 5, 9): timer tick → preemptive context switch
+//   - SVC from EL0 (type 8, EC=0x15): syscall dispatch
+//   - EL0 faults (types 8-11, non-SVC): notify supervisor, kill thread,
+//     reschedule — the rest of the system keeps running (fault isolation)
+//   - EL1 faults: diagnostic dump + halt (unrecoverable kernel panic)
 
 const uart = @import("uart");
 const syscall = @import("syscall");
