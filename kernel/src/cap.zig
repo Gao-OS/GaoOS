@@ -426,3 +426,28 @@ test "derive chain attenuation" {
     // Cannot escalate back up
     try testing.expectError(error.RightsEscalation, table.derive(leaf, Rights.READ_WRITE));
 }
+
+test "derive from CAP_NULL returns InvalidCapability" {
+    var table = CapabilityTable{};
+    try testing.expectError(error.InvalidCapability, table.derive(CAP_NULL, Rights.READ_ONLY));
+}
+
+test "check on CAP_NULL returns false" {
+    var table = CapabilityTable{};
+    try testing.expect(!table.check(CAP_NULL, Rights.READ_ONLY));
+    try testing.expect(!table.check(CAP_NULL, Rights.NONE));
+}
+
+test "siblings from same parent have independent rights" {
+    var table = CapabilityTable{};
+    const parent = try table.create(.frame, 0x1000, Rights.ALL);
+    const ro = try table.derive(parent, Rights.READ_ONLY);
+    const rw = try table.derive(parent, Rights.READ_WRITE);
+    const ro_cap = table.lookup(ro).?;
+    const rw_cap = table.lookup(rw).?;
+    // Same underlying object
+    try testing.expectEqual(ro_cap.object, rw_cap.object);
+    // Different rights
+    try testing.expect(ro_cap.rights.read and !ro_cap.rights.write);
+    try testing.expect(rw_cap.rights.read and rw_cap.rights.write);
+}
