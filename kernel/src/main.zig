@@ -39,6 +39,12 @@ fn timerTick() void {
 ///   Blocks 2-31 (0x400000-0x3FFFFFF): frame allocator pool (EL0-accessible)
 const USER_CODE_BASE: u64 = 0x200000;
 const USER_STACK_TOP: u64 = 0x400000; // Top of 2MB block, SP decrements before use
+const USER_BLOCK_SIZE: u64 = USER_STACK_TOP - USER_CODE_BASE; // 2MB
+
+comptime {
+    if (user_init.data.len > USER_BLOCK_SIZE)
+        @compileError("User program exceeds 2MB block (would corrupt frame pool)");
+}
 
 /// Patch a single L2 page table entry to allow EL0 data access (AP[1]=1).
 fn enableEL0AccessForBlock(block_index: usize) void {
@@ -64,9 +70,11 @@ fn copyUserProgram() u64 {
         dst[i] = byte;
     }
 
-    // Ensure instruction cache sees the new code
+    // Ensure instruction cache sees the new code.
+    // Round up to cache line boundary so the last partial line is flushed.
+    const cache_end = (USER_CODE_BASE + data.len + 63) & ~@as(u64, 63);
     var addr: u64 = USER_CODE_BASE;
-    while (addr < USER_CODE_BASE + data.len) : (addr += 64) {
+    while (addr < cache_end) : (addr += 64) {
         asm volatile ("dc cvau, %[addr]"
             :
             : [addr] "r" (addr),
@@ -74,7 +82,7 @@ fn copyUserProgram() u64 {
     }
     asm volatile ("dsb ish");
     addr = USER_CODE_BASE;
-    while (addr < USER_CODE_BASE + data.len) : (addr += 64) {
+    while (addr < cache_end) : (addr += 64) {
         asm volatile ("ic ivau, %[addr]"
             :
             : [addr] "r" (addr),
