@@ -231,6 +231,25 @@ pub fn ipcRecvBlock(ep_cap: u32, buf: [*]u8, tag_filter: u64) RecvResult {
     }
 }
 
+/// Blocking receive with capability transfer: blocks if no message, retries after wakeup.
+pub fn ipcRecvCapBlock(ep_cap: u32, buf: [*]u8, tag_filter: u64) RecvCapResult {
+    while (true) {
+        var len: i64 = undefined;
+        var cap_val: u64 = undefined;
+        asm volatile ("svc #0"
+            : [x0] "={x0}" (len),
+              [x1] "={x1}" (cap_val),
+            : [arg0] "{x0}" (@as(u64, ep_cap)),
+              [arg1] "{x1}" (@intFromPtr(buf)),
+              [arg2] "{x2}" (tag_filter),
+              [x8] "{x8}" (@as(u64, 22)),
+            : .{ .memory = true }
+        );
+        // E_AGAIN (-7) means we were blocked and woken up — retry
+        if (len != -7) return .{ .payload_len = len, .cap_idx = @truncate(cap_val) };
+    }
+}
+
 pub fn threadReap(thread_cap: u32) i64 {
     return asm volatile ("svc #0"
         : [ret] "={x0}" (-> i64),
