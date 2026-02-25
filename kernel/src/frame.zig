@@ -137,3 +137,36 @@ test "isAllocated reports correctly" {
     // Invalid address
     try testing.expect(!fa.isAllocated(0x0));
 }
+
+test "alloc returns distinct addresses" {
+    var fa = FrameAllocator.init();
+    const a1 = try fa.alloc();
+    const a2 = try fa.alloc();
+    const a3 = try fa.alloc();
+
+    try testing.expect(a1 != a2);
+    try testing.expect(a2 != a3);
+    try testing.expect(a1 != a3);
+
+    // All should be page-aligned and in range
+    for ([_]u64{ a1, a2, a3 }) |addr| {
+        try testing.expect(addr >= USER_POOL_START);
+        try testing.expect(addr <= USER_POOL_END);
+        try testing.expect(addr & (FRAME_SIZE - 1) == 0);
+    }
+}
+
+test "free at pool boundaries" {
+    var fa = FrameAllocator.init();
+
+    // Allocate first frame (should be at USER_POOL_START)
+    const first = try fa.alloc();
+    try testing.expectEqual(USER_POOL_START, first);
+    try fa.free(first);
+
+    // Free at exact pool boundary addresses (but out-of-range)
+    try testing.expectError(error.InvalidFrame, fa.free(USER_POOL_START - FRAME_SIZE));
+    // Address just past pool end (aligned)
+    const past_end = (USER_POOL_END + 1 + FRAME_SIZE - 1) & ~(FRAME_SIZE - 1);
+    try testing.expectError(error.InvalidFrame, fa.free(past_end));
+}
