@@ -631,6 +631,50 @@ test "blockCurrent is a no-op when no current thread" {
     try testing.expectEqual(ThreadState.ready, s.threads[0].state);
 }
 
+test "sequential wakeBlockedRecv drains all waiters in order" {
+    var s = Scheduler{};
+    const t0 = try s.spawn();
+    const t1 = try s.spawn();
+    const ep: ThreadId = 7;
+
+    _ = s.schedule(); // t0 running
+    s.threads[t0].blocked_ep = ep;
+    s.blockCurrent();
+    _ = s.schedule(); // t1 running
+    s.threads[t1].blocked_ep = ep;
+    s.blockCurrent();
+
+    // First wake unblocks the first waiter found (t0, lowest index)
+    s.wakeBlockedRecv(ep);
+    try testing.expectEqual(ThreadState.ready, s.threads[t0].state);
+    try testing.expectEqual(ThreadState.blocked, s.threads[t1].state);
+
+    // Second wake unblocks the remaining waiter
+    s.wakeBlockedRecv(ep);
+    try testing.expectEqual(ThreadState.ready, s.threads[t0].state);
+    try testing.expectEqual(ThreadState.ready, s.threads[t1].state);
+}
+
+test "spawn after table full and reap frees a slot" {
+    var s = Scheduler{};
+    // Fill the thread table
+    for (0..MAX_THREADS) |_| {
+        _ = try s.spawn();
+    }
+    try testing.expectError(error.ThreadTableFull, s.spawn());
+
+    // Kill + reap thread 0 to open a slot
+    s.kill(0);
+    s.reap(0);
+    try testing.expectEqual(ThreadState.free, s.threads[0].state);
+    try testing.expectEqual(@as(u32, MAX_THREADS - 1), s.count);
+
+    // Spawn should now succeed and reuse slot 0
+    const new_id = try s.spawn();
+    try testing.expectEqual(@as(ThreadId, 0), new_id);
+    try testing.expectEqual(@as(u32, MAX_THREADS), s.count);
+}
+
 test "resetCapTable clears all slots and count" {
     const id = 0;
     resetCapTable(id);

@@ -45,10 +45,12 @@ zig build test        # Run all unit tests
 
 Running a single test module by name:
 ```bash
-zig build test 2>&1 | head    # All tests (cap, ipc, sched)
-zig test kernel/src/cap.zig   # Run only capability tests
-zig test kernel/src/ipc.zig   # Run only IPC tests
-zig test kernel/src/sched.zig # Run only scheduler tests
+zig build test 2>&1 | head         # All tests (cap, ipc, sched, syscall, frame, mmu, fault)
+zig test kernel/src/cap.zig        # Run only capability tests
+zig test kernel/src/frame.zig      # Run only frame allocator tests
+zig test kernel/src/mmu.zig        # Run only MMU tests
+# Modules with cross-module deps require zig build test:
+# ipc (imports cap), sched (imports ipc, cap), fault (imports sched, ipc), syscall (imports all)
 ```
 
 QEMU with debug flags:
@@ -158,7 +160,7 @@ Phase 1 (minimal kernel) and Phase 2 (LibOS prototype) are complete. Phase 3 (mu
 
 ### Test Summary
 
-- 167 host unit tests (cap: 21, ipc: 23, sched: 27, syscall: 63, mmu: 13, frame: 10, fault: 10)
+- 169 host unit tests (cap: 21, ipc: 23, sched: 29, syscall: 63, mmu: 13, frame: 10, fault: 10)
 - QEMU integration test (37 output markers validated)
 - CI pipeline: unit tests + cross-compile + QEMU integration
 
