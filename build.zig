@@ -22,6 +22,7 @@ pub fn build(b: *std.Build) void {
 
     // Kernel modules (ordered by dependency)
     const timer = b.createModule(.{ .root_source_file = b.path("kernel/arch/aarch64/timer.zig"), .target = opts.target, .optimize = opts.optimize });
+    const frame = b.createModule(.{ .root_source_file = b.path("kernel/src/frame.zig"), .target = opts.target, .optimize = opts.optimize });
     const cap = b.createModule(.{ .root_source_file = b.path("kernel/src/cap.zig"), .target = opts.target, .optimize = opts.optimize });
     const ipc = b.createModule(.{ .root_source_file = b.path("kernel/src/ipc.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{.{ .name = "cap", .module = cap }} });
     const sched = b.createModule(.{ .root_source_file = b.path("kernel/src/sched.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "cap", .module = cap }, .{ .name = "ipc", .module = ipc } } });
@@ -42,6 +43,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "ipc", .module = ipc },
                 .{ .name = "sched", .module = sched },
                 .{ .name = "timer", .module = timer },
+                .{ .name = "frame", .module = frame },
             },
         }),
     });
@@ -96,4 +98,12 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(sched_tests).step);
+
+    const frame_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("kernel/src/frame.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(frame_tests).step);
 }
