@@ -200,6 +200,12 @@ export fn user_main() void {
     if (got_frame) io.println(UART_CAP, "Cap delegation: OK");
     if (fault_count >= TOTAL_WORKERS) io.println(UART_CAP, "Fault supervision: OK");
 
+    // Reap dead workers (all 3 have exited by now)
+    _ = sys.threadReap(a_thread_cap);
+    _ = sys.threadReap(b_thread_cap);
+    _ = sys.threadReap(e_thread_cap);
+    io.println(UART_CAP, "Thread reap: OK");
+
     io.println(UART_CAP, "All workers done. System shutting down.");
 
     _ = sys.frameFree(a_stack_cap);

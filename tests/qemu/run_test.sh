@@ -92,6 +92,7 @@ MARKERS=(
     "Orchestrator: fault from thread"
     "Cap delegation: OK"
     "Fault supervision: OK"
+    "Thread reap: OK"
     "All workers done"
 
     # Kernel exit

@@ -42,6 +42,7 @@ pub const SYS_EP_GRANT = 15;
 pub const SYS_SUPERVISOR_SET = 16;
 pub const SYS_IPC_SEND_CAP = 17;
 pub const SYS_IPC_RECV_CAP = 18;
+pub const SYS_THREAD_REAP = 19;
 
 // ─── Error codes (returned in x0) ──────────────────────────────────
 
@@ -110,6 +111,7 @@ pub fn dispatch(thread_id: sched.ThreadId, frame: [*]u64) void {
         SYS_SUPERVISOR_SET => sysSupervisorSet(thread_id, @truncate(arg0), @truncate(arg1)),
         SYS_IPC_SEND_CAP => sysIpcSendCap(thread_id, @truncate(arg0), arg1, arg2, @truncate(arg3)),
         SYS_IPC_RECV_CAP => sysIpcRecvCap(thread_id, frame, @truncate(arg0), arg1, arg2),
+        SYS_THREAD_REAP => sysThreadReap(thread_id, @truncate(arg0)),
         else => E_BADSYS,
     };
 
@@ -412,6 +414,27 @@ fn sysSupervisorSet(thread_id: sched.ThreadId, thread_cap_idx: cap.CapIndex, ep_
 
     // Store the endpoint index so kill() can deliver the fault notification
     target_thread.supervisor_ep = capObjectToId(ep_cap.object) orelse return E_BADCAP;
+
+    return E_OK;
+}
+
+fn sysThreadReap(thread_id: sched.ThreadId, thread_cap_idx: cap.CapIndex) u64 {
+    const table = sched.getCapTable(thread_id) orelse return E_BADCAP;
+
+    const thread_cap = table.lookup(thread_cap_idx) orelse return E_BADCAP;
+    if (thread_cap.cap_type != .thread) return E_BADCAP;
+    if (!thread_cap.rights.write) return E_BADCAP;
+
+    const target_id = capObjectToId(thread_cap.object) orelse return E_BADCAP;
+    const target = sched.global.getThread(target_id) orelse return E_BADCAP;
+
+    // Only dead threads can be reaped
+    if (target.state != .dead) return E_BADARG;
+
+    sched.global.reap(target_id);
+
+    // Delete the thread cap since the thread no longer exists
+    table.delete(thread_cap_idx);
 
     return E_OK;
 }

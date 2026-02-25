@@ -209,3 +209,12 @@ pub fn ipcRecvCap(ep_cap: u32, buf: [*]u8, tag_filter: u64) RecvCapResult {
     );
     return .{ .payload_len = len, .cap_idx = @truncate(cap_val) };
 }
+
+pub fn threadReap(thread_cap: u32) i64 {
+    return asm volatile ("svc #0"
+        : [ret] "={x0}" (-> i64),
+        : [x0] "{x0}" (@as(u64, thread_cap)),
+          [x8] "{x8}" (@as(u64, 19)),
+        : .{ .memory = true }
+    );
+}
