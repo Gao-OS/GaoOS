@@ -167,6 +167,14 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(fault_tests).step);
 
+    const mmu_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("kernel/src/mmu.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(mmu_tests).step);
+
     // ── QEMU integration test ───────────────────────────────────────
 
     const qemu_test_step = b.step("qemu-test", "Run QEMU integration test (requires qemu-system-aarch64)");

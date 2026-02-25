@@ -221,3 +221,184 @@ pub fn initFrameAllocator(
         .used = reserved_frames,
     };
 }
+
+// ─── Tests ──────────────────────────────────────────────────────────
+
+const testing = std.testing;
+
+test "PageTableEntry is 8 bytes" {
+    try testing.expectEqual(@as(usize, 8), @sizeOf(PageTableEntry));
+}
+
+test "PageTable is 4KB" {
+    try testing.expectEqual(@as(usize, PAGE_SIZE), @sizeOf(PageTable));
+}
+
+test "frame allocator: alloc returns page-aligned addresses" {
+    var fa = try initFrameAllocator(testing.allocator, 64 * PAGE_SIZE, 0);
+    defer testing.allocator.free(fa.bitmap);
+
+    const a0 = try fa.allocFrame();
+    try testing.expectEqual(@as(u64, 0), a0);
+    try testing.expectEqual(@as(usize, 1), fa.used);
+
+    const a1 = try fa.allocFrame();
+    try testing.expectEqual(@as(u64, PAGE_SIZE), a1);
+}
+
+test "frame allocator: reserved frames are skipped" {
+    var fa = try initFrameAllocator(testing.allocator, 64 * PAGE_SIZE, 4);
+    defer testing.allocator.free(fa.bitmap);
+
+    try testing.expectEqual(@as(usize, 4), fa.used);
+
+    const addr = try fa.allocFrame();
+    try testing.expectEqual(@as(u64, 4 * PAGE_SIZE), addr);
+}
+
+test "frame allocator: exhaust and OOM" {
+    // Use 64 frames (exactly one bitmap word) so exhaustion is detected
+    var fa = try initFrameAllocator(testing.allocator, 64 * PAGE_SIZE, 0);
+    defer testing.allocator.free(fa.bitmap);
+
+    for (0..64) |_| {
+        _ = try fa.allocFrame();
+    }
+    try testing.expectEqual(@as(usize, 64), fa.used);
+    try testing.expectError(error.OutOfMemory, fa.allocFrame());
+}
+
+test "frame allocator: free and realloc" {
+    var fa = try initFrameAllocator(testing.allocator, 64 * PAGE_SIZE, 0);
+    defer testing.allocator.free(fa.bitmap);
+
+    const a0 = try fa.allocFrame();
+    const a1 = try fa.allocFrame();
+    fa.freeFrame(a0);
+    try testing.expectEqual(@as(usize, 1), fa.used);
+
+    const a2 = try fa.allocFrame();
+    try testing.expectEqual(a0, a2);
+    _ = a1;
+}
+
+// Page-aligned table pool for testing mapPage/unmapPage.
+// Tables must be page-aligned because mapPage stores (addr >> 12) in output_pa.
+const TestTablePool = struct {
+    // Allocate page-aligned tables via the page allocator
+    tables: [8]?[]u8,
+    next: usize,
+
+    fn init() TestTablePool {
+        return .{ .tables = .{null} ** 8, .next = 0 };
+    }
+
+    fn deinit(self: *TestTablePool) void {
+        for (&self.tables) |*t| {
+            if (t.*) |slice| {
+                std.heap.page_allocator.free(slice);
+                t.* = null;
+            }
+        }
+    }
+
+    fn allocTable(ctx: *anyopaque) anyerror!PhysAddr {
+        const self: *TestTablePool = @alignCast(@ptrCast(ctx));
+        if (self.next >= self.tables.len) return error.OutOfMemory;
+        const mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
+        @memset(mem, 0);
+        self.tables[self.next] = mem;
+        self.next += 1;
+        return @intFromPtr(mem.ptr);
+    }
+
+    fn allocator(self: *TestTablePool) Allocator {
+        return .{ .allocFn = &allocTable, .ptr = @ptrCast(self) };
+    }
+};
+
+test "mapPage creates page table hierarchy" {
+    var pool = TestTablePool.init();
+    defer pool.deinit();
+
+    const l0_mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
+    defer std.heap.page_allocator.free(l0_mem);
+    @memset(l0_mem, 0);
+    const l0: *PageTable = @alignCast(@ptrCast(l0_mem.ptr));
+
+    const flags = PageTableEntry{
+        .valid = 1, .type_table = 0, .attr_index = 1, .ns = 0,
+        .ap = 0, .sh = 3, .af = 1, .ng = 0, .output_pa = 0,
+    };
+
+    try mapPage(l0, 0x1000, 0x2000, pool.allocator(), flags);
+
+    // Verify L0 entry is valid (points to L1)
+    try testing.expectEqual(@as(u1, 1), l0[0].valid);
+    try testing.expectEqual(@as(u1, 1), l0[0].type_table);
+
+    // Walk to L3 and verify the final page entry
+    const l1: *PageTable = @ptrFromInt(@as(u64, l0[0].output_pa) << 12);
+    try testing.expectEqual(@as(u1, 1), l1[0].valid);
+    const l2: *PageTable = @ptrFromInt(@as(u64, l1[0].output_pa) << 12);
+    try testing.expectEqual(@as(u1, 1), l2[0].valid);
+    const l3: *PageTable = @ptrFromInt(@as(u64, l2[0].output_pa) << 12);
+
+    // VA 0x1000: L3 index = (0x1000 >> 12) & 0x1FF = 1
+    const entry = l3[1];
+    try testing.expectEqual(@as(u1, 1), entry.valid);
+    try testing.expectEqual(@as(u3, 1), entry.attr_index);
+    try testing.expectEqual(@as(u2, 3), entry.sh);
+    try testing.expectEqual(@as(u64, 0x2000 >> 12), @as(u64, entry.output_pa) & 0xFFFFF);
+
+    // 3 tables allocated (L1, L2, L3)
+    try testing.expectEqual(@as(usize, 3), pool.next);
+}
+
+test "unmapPage invalidates entry" {
+    var pool = TestTablePool.init();
+    defer pool.deinit();
+
+    const l0_mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
+    defer std.heap.page_allocator.free(l0_mem);
+    @memset(l0_mem, 0);
+    const l0: *PageTable = @alignCast(@ptrCast(l0_mem.ptr));
+
+    const flags = PageTableEntry{
+        .valid = 1, .type_table = 0, .attr_index = 0, .ns = 0,
+        .ap = 0, .sh = 0, .af = 1, .ng = 0, .output_pa = 0,
+    };
+
+    try mapPage(l0, 0x1000, 0x2000, pool.allocator(), flags);
+
+    const l1: *PageTable = @ptrFromInt(@as(u64, l0[0].output_pa) << 12);
+    const l2: *PageTable = @ptrFromInt(@as(u64, l1[0].output_pa) << 12);
+    const l3: *PageTable = @ptrFromInt(@as(u64, l2[0].output_pa) << 12);
+    try testing.expectEqual(@as(u1, 1), l3[1].valid);
+
+    unmapPage(l0, 0x1000);
+    try testing.expectEqual(@as(u1, 0), l3[1].valid);
+}
+
+test "mapPage reuses existing intermediate tables" {
+    var pool = TestTablePool.init();
+    defer pool.deinit();
+
+    const l0_mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
+    defer std.heap.page_allocator.free(l0_mem);
+    @memset(l0_mem, 0);
+    const l0: *PageTable = @alignCast(@ptrCast(l0_mem.ptr));
+
+    const flags = PageTableEntry{
+        .valid = 1, .type_table = 0, .attr_index = 0, .ns = 0,
+        .ap = 0, .sh = 0, .af = 1, .ng = 0, .output_pa = 0,
+    };
+
+    // Map two pages in the same L3 table (same L0/L1/L2 path)
+    try mapPage(l0, 0x1000, 0x2000, pool.allocator(), flags);
+    const after_first = pool.next;
+
+    try mapPage(l0, 0x2000, 0x3000, pool.allocator(), flags);
+    // No new tables should be allocated (same L1, L2, L3)
+    try testing.expectEqual(after_first, pool.next);
+}
