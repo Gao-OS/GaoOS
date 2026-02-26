@@ -42,14 +42,18 @@ fi
 ACTUAL=$(mktemp)
 trap 'rm -f "$ACTUAL"' EXIT
 
-if ! timeout "$TIMEOUT_SEC" qemu-system-aarch64 \
+QEMU_EXIT=0
+timeout "$TIMEOUT_SEC" qemu-system-aarch64 \
     -M raspi3b \
     -kernel "$KERNEL" \
     -serial stdio \
     -display none \
     -no-reboot \
-    2>/dev/null > "$ACTUAL"; then
-    true
+    2>/dev/null > "$ACTUAL" || QEMU_EXIT=$?
+
+# timeout(1) returns 124 on timeout — distinguish from normal QEMU exit
+if [ "$QEMU_EXIT" -eq 124 ]; then
+    echo "WARN: QEMU timed out after ${TIMEOUT_SEC}s (output may be incomplete)"
 fi
 
 # Key markers that MUST appear in the output (order-independent for
@@ -112,6 +116,17 @@ MARKERS=(
 PASS=true
 FAILED=()
 
+# Check for fatal errors first — these indicate silent failures that would
+# otherwise be masked by passing marker checks
+if grep -qF "FATAL:" "$ACTUAL"; then
+    echo "FAIL: test encountered fatal error(s):"
+    grep -F "FATAL:" "$ACTUAL" | sed 's/^/  /'
+    echo ""
+    echo "Actual output:"
+    cat "$ACTUAL"
+    exit 1
+fi
+
 for marker in "${MARKERS[@]}"; do
     if ! grep -qF "$marker" "$ACTUAL"; then
         FAILED+=("$marker")
@@ -119,8 +134,15 @@ for marker in "${MARKERS[@]}"; do
     fi
 done
 
+# Validate fault supervision count: exactly 3 workers should be accounted for
+FAULT_COUNT=$(grep -cF "Orchestrator: fault from thread" "$ACTUAL" || true)
+if [ "$FAULT_COUNT" -lt 3 ]; then
+    FAILED+=("fault count: expected 3, got $FAULT_COUNT")
+    PASS=false
+fi
+
 if $PASS; then
-    echo "PASS (${#MARKERS[@]} markers verified)"
+    echo "PASS (${#MARKERS[@]} markers verified, $FAULT_COUNT/3 faults)"
     exit 0
 else
     echo "FAIL: missing ${#FAILED[@]} of ${#MARKERS[@]} markers:"
