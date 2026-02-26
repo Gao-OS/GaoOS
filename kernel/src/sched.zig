@@ -56,7 +56,7 @@ pub const Thread = struct {
     context: Context = .{},
     stack_base: usize = 0,
     supervisor: ThreadId = 0,
-    supervisor_ep: u32 = 0xFFFFFFFF, // Endpoint index for fault notifications (0xFFFFFFFF = none)
+    supervisor_ep: u32 = THREAD_NONE, // Endpoint index for fault notifications (THREAD_NONE = none)
     blocked_ep: ThreadId = THREAD_NONE, // Endpoint this thread is blocked waiting on (THREAD_NONE = not blocked)
 };
 
@@ -212,7 +212,7 @@ pub const Scheduler = struct {
         zeroContext(&thread.context);
         thread.stack_base = 0;
         thread.supervisor = 0;
-        thread.supervisor_ep = 0xFFFFFFFF;
+        thread.supervisor_ep = THREAD_NONE;
         thread.blocked_ep = THREAD_NONE;
         resetCapTable(id);
         resetEndpoint(id);
@@ -427,7 +427,7 @@ test "reap resets supervisor_ep" {
     s.threads[id].supervisor_ep = 5;
     s.kill(id);
     s.reap(id);
-    try testing.expectEqual(@as(u32, 0xFFFFFFFF), s.threads[id].supervisor_ep);
+    try testing.expectEqual(THREAD_NONE, s.threads[id].supervisor_ep);
     try testing.expectEqual(@as(u32, 0), s.threads[id].supervisor);
     try testing.expectEqual(ThreadState.free, s.threads[id].state);
 }
@@ -798,7 +798,7 @@ test "spawn initializes supervisor_ep to THREAD_NONE" {
     var s = Scheduler{};
     const id = try s.spawn();
     // Thread must start with no supervisor and no blocked endpoint
-    try testing.expectEqual(@as(u32, 0xFFFFFFFF), s.threads[id].supervisor_ep);
+    try testing.expectEqual(THREAD_NONE, s.threads[id].supervisor_ep);
     try testing.expectEqual(THREAD_NONE, s.threads[id].blocked_ep);
 }
 
