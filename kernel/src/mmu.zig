@@ -586,3 +586,73 @@ test "unmapPage does not affect neighboring pages in same L3 table" {
     try testing.expectEqual(@as(u1, 1), l3[2].valid); // neighbor intact
     try testing.expectEqual(@as(u52, 0xB000 >> 12), l3[2].output_pa);
 }
+
+test "mapPage overwrites existing entry without allocating new tables" {
+    var pool = TestTablePool.init();
+    defer pool.deinit();
+
+    const l0_mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
+    defer std.heap.page_allocator.free(l0_mem);
+    @memset(l0_mem, 0);
+    const l0: *PageTable = @ptrCast(@alignCast(l0_mem.ptr));
+
+    const flags = PageTableEntry{
+        .valid = 1, .type_table = 0, .attr_index = 0, .ns = 0,
+        .ap = 0, .sh = 0, .af = 1, .ng = 0, .output_pa = 0,
+    };
+
+    // First map: VA 0x1000 → PA 0x2000 (creates 3 tables)
+    try mapPage(l0, 0x1000, 0x2000, pool.allocator(), flags);
+    try testing.expectEqual(@as(usize, 3), pool.next);
+    const l3: *PageTable = blk: {
+        const l1: *PageTable = @ptrFromInt(@as(u64, l0[0].output_pa) << 12);
+        const l2: *PageTable = @ptrFromInt(@as(u64, l1[0].output_pa) << 12);
+        break :blk @ptrFromInt(@as(u64, l2[0].output_pa) << 12);
+    };
+    try testing.expectEqual(@as(u52, 0x2000 >> 12), l3[1].output_pa);
+
+    // Second map: same VA → different PA — reuses all existing tables
+    try mapPage(l0, 0x1000, 0x5000, pool.allocator(), flags);
+    try testing.expectEqual(@as(usize, 3), pool.next); // no new tables
+    try testing.expectEqual(@as(u52, 0x5000 >> 12), l3[1].output_pa);
+}
+
+test "unmapPage returns false when L1 entry is invalid" {
+    var pool = TestTablePool.init();
+    defer pool.deinit();
+
+    const l0_mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
+    defer std.heap.page_allocator.free(l0_mem);
+    @memset(l0_mem, 0);
+    const l0: *PageTable = @ptrCast(@alignCast(l0_mem.ptr));
+
+    const flags = PageTableEntry{
+        .valid = 1, .type_table = 0, .attr_index = 0, .ns = 0,
+        .ap = 0, .sh = 0, .af = 1, .ng = 0, .output_pa = 0,
+    };
+
+    // Map VA 0x1000 (l0_idx=0, l1_idx=0) — creates L0[0] and L1[0..], but not L1[1]
+    try mapPage(l0, 0x1000, 0x2000, pool.allocator(), flags);
+    // VA 0x40000000: l0_idx=0 (valid), l1_idx=1 (not created) → false
+    try testing.expect(!unmapPage(l0, 0x40000000));
+}
+
+test "unmapPage returns false when L2 entry is invalid" {
+    var pool = TestTablePool.init();
+    defer pool.deinit();
+
+    const l0_mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
+    defer std.heap.page_allocator.free(l0_mem);
+    @memset(l0_mem, 0);
+    const l0: *PageTable = @ptrCast(@alignCast(l0_mem.ptr));
+
+    const flags = PageTableEntry{
+        .valid = 1, .type_table = 0, .attr_index = 0, .ns = 0,
+        .ap = 0, .sh = 0, .af = 1, .ng = 0, .output_pa = 0,
+    };
+
+    // Map VA 0x1000 (l2_idx=0) — creates L2[0..], but not L2[1]
+    try mapPage(l0, 0x1000, 0x2000, pool.allocator(), flags);
+    // VA 0x200000: l0_idx=0, l1_idx=0 (both valid), l2_idx=1 (not created) → false
+    try testing.expect(!unmapPage(l0, 0x200000));
+}
