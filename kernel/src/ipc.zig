@@ -656,3 +656,20 @@ test "getPayload returns correct slice" {
     try testing.expectEqual(@as(usize, 5), p.len);
     try testing.expectEqualSlices(u8, "hello", p);
 }
+
+test "TAG_ANY wildcard receives message with tag zero" {
+    // TAG_ANY == 0, so filter=0 acts as wildcard, not as selective filter for tag=0.
+    // This documents the design constraint: messages with tag=0 cannot be selectively
+    // received; they are always matched by the TAG_ANY wildcard path.
+    var ep = Endpoint{};
+    try ep.send(Message.init(0, "zero-tag"), null, null);
+    try ep.send(Message.init(42, "other"), null, null);
+
+    // TAG_ANY filter returns the first message (tag=0) as wildcard, not selective
+    const m = ep.recv(TAG_ANY).?;
+    try testing.expectEqual(@as(u64, 0), m.tag);
+    // Remaining message also retrievable
+    const m2 = ep.recv(TAG_ANY).?;
+    try testing.expectEqual(@as(u64, 42), m2.tag);
+    try testing.expect(ep.isEmpty());
+}

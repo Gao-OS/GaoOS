@@ -210,3 +210,21 @@ test "free at pool boundaries" {
     const past_end = (USER_POOL_END + 1 + FRAME_SIZE - 1) & ~(FRAME_SIZE - 1);
     try testing.expectError(error.InvalidFrame, fa.free(past_end));
 }
+
+test "isAllocated returns false for unaligned address within pool" {
+    var fa = FrameAllocator.init();
+    // Misaligned address inside pool range — not page-aligned
+    try testing.expect(!fa.isAllocated(USER_POOL_START + 1));
+    try testing.expect(!fa.isAllocated(USER_POOL_START + 2048));
+    // Even after allocating the first frame, unaligned queries still return false
+    _ = try fa.alloc();
+    try testing.expect(!fa.isAllocated(USER_POOL_START + 1));
+}
+
+test "isAllocated returns false for address past pool end" {
+    var fa = FrameAllocator.init();
+    const past_end = (USER_POOL_END + 1 + FRAME_SIZE - 1) & ~(FRAME_SIZE - 1);
+    try testing.expect(!fa.isAllocated(past_end));
+    // Before pool start
+    try testing.expect(!fa.isAllocated(USER_POOL_START - FRAME_SIZE));
+}
