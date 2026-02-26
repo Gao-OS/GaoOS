@@ -4,8 +4,6 @@
 // to real virtual memory. We set TTBR0_EL1 (user space) and TTBR1_EL1
 // (kernel space), configure caching and permissions, then enable SCTLR_EL1.
 
-const uart = @import("uart");
-
 /// Memory attribute index mapping (MAIR_EL1).
 /// Index 0: normal cached, WB (write-back), RA (read-allocate), WA (write-allocate)
 /// Index 1: device nGnRnE (strongly ordered, for MMIO)
