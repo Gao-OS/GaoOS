@@ -344,6 +344,44 @@ test "send_cap with invalid cap index returns error" {
     try testing.expectError(error.InvalidCapability, result);
 }
 
+test "duplicate cap index in message: transfers once, second slot becomes CAP_NULL" {
+    // When the same cap index appears in multiple cap slots of a message,
+    // the first occurrence transfers the cap (deleting it from sender),
+    // and subsequent occurrences find the cap already gone → stored as CAP_NULL.
+    var ep = Endpoint{};
+    var sender = cap.CapabilityTable{};
+    var receiver = cap.CapabilityTable{};
+
+    const src_idx = try sender.create(.frame, 0xBEEF, cap.Rights.ALL);
+
+    // Attach the same index twice
+    var msg = Message.init(7, "dup cap");
+    try msg.attachCap(src_idx);
+    try msg.attachCap(src_idx); // same index again
+
+    // Phase 1 counts both slots as valid (duplicate detection is deferred to phase 2).
+    // Send must succeed because the receiver has room.
+    try ep.send(msg, &sender, &receiver);
+
+    // Sender cap must be gone (deleted exactly once)
+    try testing.expect(sender.lookup(src_idx) == null);
+
+    const received = ep.recv(TAG_ANY).?;
+
+    // First slot: valid transferred cap
+    const first_idx = received.caps[0];
+    try testing.expect(first_idx != cap.CAP_NULL);
+    const transferred = receiver.lookup(first_idx).?;
+    try testing.expectEqual(cap.CapabilityType.frame, transferred.cap_type);
+    try testing.expectEqual(@as(usize, 0xBEEF), transferred.object);
+
+    // Second slot: CAP_NULL — the cap was already deleted during the first transfer
+    try testing.expectEqual(cap.CAP_NULL, received.caps[1]);
+
+    // Only one cap landed in the receiver table
+    try testing.expectEqual(@as(u32, 1), receiver.count);
+}
+
 test "Message.init truncates long payload" {
     var data: [512]u8 = undefined;
     for (&data) |*b| b.* = 0xAB;

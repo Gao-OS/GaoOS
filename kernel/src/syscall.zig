@@ -1227,6 +1227,49 @@ test "sysIpcRecvBlock blocks on empty endpoint" {
     try testing.expectEqual(tid, sched.global.threads[tid].blocked_ep);
 }
 
+test "sysIpcRecvBlock: block then wake via send clears blocked_ep and readies thread" {
+    // Full round-trip: thread blocks on empty endpoint, a message is sent to
+    // the endpoint, wakeBlockedRecv is called (as the send path does), and the
+    // thread transitions to ready so it can retry recv successfully.
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    const ep_idx: sched.ThreadId = @intCast(sched.getCapTable(tid).?.lookup(ep_cap).?.object);
+
+    sched.global.threads[tid].state = .running;
+    sched.global.current = tid;
+    sched.global.has_current = true;
+
+    // Step 1: blocking recv on empty endpoint → blocks the thread
+    var frame_buf: [34]u64 = undefined;
+    const block_result = sysIpcRecvBlock(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(E_AGAIN, block_result);
+    try testing.expectEqual(sched.ThreadState.blocked, sched.global.threads[tid].state);
+    try testing.expectEqual(ep_idx, sched.global.threads[tid].blocked_ep);
+
+    // Step 2: send a message to the endpoint (simulates another thread sending)
+    const ep = sched.getEndpoint(ep_idx).?;
+    try ep.send(ipc.Message.init(0xABCD, "wake"), null, null);
+
+    // Step 3: wake the blocked thread (simulates what sysIpcSend's send path triggers)
+    sched.global.wakeBlockedRecv(ep_idx);
+
+    // Thread should now be ready and have cleared its blocked_ep
+    try testing.expectEqual(sched.ThreadState.ready, sched.global.threads[tid].state);
+    try testing.expectEqual(sched.THREAD_NONE, sched.global.threads[tid].blocked_ep);
+
+    // Step 4: retry recv — now succeeds immediately
+    // sysIpcRecvBlock returns payload_len on success (not E_OK), and writes:
+    //   frame[31] = payload_len, frame[32] = tag
+    sched.global.threads[tid].state = .running;
+    sched.global.current = tid;
+    sched.global.has_current = true;
+    const recv_result = sysIpcRecvBlock(tid, &frame_buf, ep_cap, 0, 0);
+    const expected_payload_len: u64 = 4; // "wake" is 4 bytes
+    try testing.expectEqual(expected_payload_len, recv_result);
+    try testing.expectEqual(@as(u64, 0xABCD), frame_buf[32]); // tag in x1 slot
+}
+
 test "sysIpcRecvBlock returns E_CLOSED on closed endpoint" {
     const tid = testSetup();
     defer testTeardown();

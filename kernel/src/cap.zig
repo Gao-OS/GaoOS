@@ -656,6 +656,36 @@ test "generation increments on each create-delete cycle" {
     try testing.expectEqual(@as(u32, 20), table.slots[0].generation);
 }
 
+test "generation counter wraps safely at u32 boundary" {
+    // Wrapping arithmetic on generation is intentional (uses +%=).
+    // After wraparound, stale handles from the previous epoch won't match
+    // because the slot generation differs from any cached old value.
+    var table = CapabilityTable{};
+    const idx = try table.create(.frame, 0x1000, Rights.ALL);
+
+    // Fast-forward generation to just before u32 max
+    table.slots[idx].generation = 0xFFFFFFFE;
+
+    // Delete: generation increments to 0xFFFFFFFF
+    table.delete(idx);
+    try testing.expectEqual(@as(u32, 0xFFFFFFFF), table.slots[idx].generation);
+    try testing.expect(table.lookup(idx) == null);
+
+    // Create again: generation wraps to 0x00000000
+    const idx2 = try table.create(.device, 0x2000, Rights.READ_ONLY);
+    try testing.expectEqual(idx, idx2); // same slot reused
+    try testing.expectEqual(@as(u32, 0x00000000), table.slots[idx2].generation);
+
+    // Lookup still works after wraparound
+    const c = table.lookup(idx2).?;
+    try testing.expectEqual(CapabilityType.device, c.cap_type);
+    try testing.expectEqual(@as(usize, 0x2000), c.object);
+
+    // Delete again: wraps to 0x00000001
+    table.delete(idx2);
+    try testing.expectEqual(@as(u32, 0x00000001), table.slots[idx].generation);
+}
+
 test "derive write-only cap" {
     var table = CapabilityTable{};
     const parent = try table.create(.frame, 0x1000, Rights.ALL);
