@@ -94,7 +94,7 @@ pub const CapabilityTable = struct {
     const Slot = struct {
         cap: Capability = Capability.INVALID,
         valid: bool = false,
-        generation: u32 = 0, // Incremented on delete; prevents use-after-free
+        generation: u32 = 0, // Incremented on reuse (create) and delete; prevents stale handles
     };
 
     /// Create a new capability in the table.
@@ -133,11 +133,13 @@ pub const CapabilityTable = struct {
     }
 
     /// Delete a capability, immediately invalidating it.
-    /// The generation counter prevents stale indices from resolving.
+    /// Bumps the generation counter so that any future reuse of this slot
+    /// produces a distinct generation value.
     pub fn delete(self: *CapabilityTable, index: CapIndex) void {
         if (index >= MAX_CAPS) return;
         const slot = &self.slots[index];
         if (!slot.valid) return;
+        slot.generation +%= 1;
         slot.valid = false;
         slot.cap = Capability.INVALID;
         if (self.count > 0) self.count -= 1;
