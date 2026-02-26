@@ -22,6 +22,13 @@ TIMEOUT_SEC="${QEMU_TIMEOUT:-15}"
 
 cd "$PROJECT_ROOT"
 
+# Verify QEMU is available
+if ! command -v qemu-system-aarch64 &> /dev/null; then
+    echo "FAIL: qemu-system-aarch64 not found"
+    echo "Install: sudo apt-get install qemu-system-arm"
+    exit 2
+fi
+
 # Build if needed
 if [ ! -f "$KERNEL" ]; then
     echo "Building kernel..."

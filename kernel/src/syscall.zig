@@ -88,6 +88,35 @@ fn isValidUserRange(ptr: u64, len: u64) bool {
     return end[0] <= USER_MEM_END;
 }
 
+// ─── Shared helpers ─────────────────────────────────────────────────
+
+const MAX_WRITE_SIZE: u64 = 4096;
+
+/// Resolve an endpoint capability for recv-side syscalls.
+/// Returns the validated endpoint pointer and its index, or null on any cap error.
+const RecvEndpoint = struct {
+    ep: *ipc.Endpoint,
+    ep_idx: sched.ThreadId,
+};
+
+fn resolveRecvEndpoint(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex) ?RecvEndpoint {
+    const table = sched.getCapTable(thread_id) orelse return null;
+    const c = table.lookup(ep_cap_idx) orelse return null;
+    if (c.cap_type != .ipc_endpoint) return null;
+    if (!c.rights.read) return null;
+    const ep_idx = capObjectToId(c.object) orelse return null;
+    const ep = sched.getEndpoint(ep_idx) orelse return null;
+    return .{ .ep = ep, .ep_idx = ep_idx };
+}
+
+/// Returns true for syscalls that require an immediate reschedule after dispatch.
+pub fn shouldReschedule(syscall_num: u64) bool {
+    return syscall_num == SYS_YIELD or
+        syscall_num == SYS_EXIT or
+        syscall_num == SYS_IPC_RECV_BLOCK or
+        syscall_num == SYS_IPC_RECV_CAP_BLOCK;
+}
+
 // ─── Dispatch ──────────────────────────────────────────────────────
 
 pub fn dispatch(thread_id: sched.ThreadId, frame: [*]u64) void {
@@ -177,7 +206,7 @@ fn sysWrite(thread_id: sched.ThreadId, cap_idx: cap.CapIndex, buf_ptr: u64, buf_
     if (!c.rights.write) return E_BADCAP;
 
     if (buf_len == 0) return E_OK;
-    const len: usize = @intCast(@min(buf_len, 4096));
+    const len: usize = @intCast(@min(buf_len, MAX_WRITE_SIZE));
     if (!isValidUserRange(buf_ptr, len)) return E_BADARG;
 
     const buf: [*]const u8 = @ptrFromInt(buf_ptr);
@@ -301,31 +330,11 @@ fn sysIpcSend(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u64,
 }
 
 fn sysIpcRecv(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex, buf_ptr: u64, tag_filter: u64) u64 {
-    const table = sched.getCapTable(thread_id) orelse {
+    const resolved = resolveRecvEndpoint(thread_id, ep_cap_idx) orelse {
         frame[31] = E_BADCAP;
         return E_BADCAP;
     };
-    const c = table.lookup(ep_cap_idx) orelse {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    };
-    if (c.cap_type != .ipc_endpoint) {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    }
-    if (!c.rights.read) {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    }
-
-    const ep_idx = capObjectToId(c.object) orelse {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    };
-    const ep = sched.getEndpoint(ep_idx) orelse {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    };
+    const ep = resolved.ep;
 
     // Validate user buffer before consuming message (avoid losing messages on bad ptr)
     if (buf_ptr != 0 and !isValidUserRange(buf_ptr, ipc.MAX_PAYLOAD)) {
@@ -351,31 +360,11 @@ fn sysIpcRecv(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex
 }
 
 fn sysIpcRecvBlock(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex, buf_ptr: u64, tag_filter: u64) u64 {
-    const table = sched.getCapTable(thread_id) orelse {
+    const resolved = resolveRecvEndpoint(thread_id, ep_cap_idx) orelse {
         frame[31] = E_BADCAP;
         return E_BADCAP;
     };
-    const c = table.lookup(ep_cap_idx) orelse {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    };
-    if (c.cap_type != .ipc_endpoint) {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    }
-    if (!c.rights.read) {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    }
-
-    const ep_idx = capObjectToId(c.object) orelse {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    };
-    const ep = sched.getEndpoint(ep_idx) orelse {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    };
+    const ep = resolved.ep;
 
     // Validate user buffer before consuming message
     if (buf_ptr != 0 and !isValidUserRange(buf_ptr, ipc.MAX_PAYLOAD)) {
@@ -397,7 +386,7 @@ fn sysIpcRecvBlock(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.Cap
             frame[31] = E_AGAIN;
             return E_AGAIN;
         };
-        thread.blocked_ep = ep_idx;
+        thread.blocked_ep = resolved.ep_idx;
         sched.global.blockCurrent();
         frame[31] = E_AGAIN;
         return E_AGAIN;
@@ -611,31 +600,11 @@ fn sysIpcSendCap(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u
 }
 
 fn sysIpcRecvCap(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex, buf_ptr: u64, tag_filter: u64) u64 {
-    const table = sched.getCapTable(thread_id) orelse {
+    const resolved = resolveRecvEndpoint(thread_id, ep_cap_idx) orelse {
         frame[31] = E_BADCAP;
         return E_BADCAP;
     };
-    const c = table.lookup(ep_cap_idx) orelse {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    };
-    if (c.cap_type != .ipc_endpoint) {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    }
-    if (!c.rights.read) {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    }
-
-    const ep_idx = capObjectToId(c.object) orelse {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    };
-    const ep = sched.getEndpoint(ep_idx) orelse {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    };
+    const ep = resolved.ep;
 
     // Validate user buffer before consuming message
     if (buf_ptr != 0 and !isValidUserRange(buf_ptr, ipc.MAX_PAYLOAD)) {
@@ -666,31 +635,11 @@ fn sysIpcRecvCap(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIn
 }
 
 fn sysIpcRecvCapBlock(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex, buf_ptr: u64, tag_filter: u64) u64 {
-    const table = sched.getCapTable(thread_id) orelse {
+    const resolved = resolveRecvEndpoint(thread_id, ep_cap_idx) orelse {
         frame[31] = E_BADCAP;
         return E_BADCAP;
     };
-    const c = table.lookup(ep_cap_idx) orelse {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    };
-    if (c.cap_type != .ipc_endpoint) {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    }
-    if (!c.rights.read) {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    }
-
-    const ep_idx = capObjectToId(c.object) orelse {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    };
-    const ep = sched.getEndpoint(ep_idx) orelse {
-        frame[31] = E_BADCAP;
-        return E_BADCAP;
-    };
+    const ep = resolved.ep;
 
     if (buf_ptr != 0 and !isValidUserRange(buf_ptr, ipc.MAX_PAYLOAD)) {
         frame[31] = E_BADARG;
@@ -711,7 +660,7 @@ fn sysIpcRecvCapBlock(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.
             frame[32] = @as(u64, cap.CAP_NULL);
             return E_AGAIN;
         };
-        thread.blocked_ep = ep_idx;
+        thread.blocked_ep = resolved.ep_idx;
         sched.global.blockCurrent();
         frame[31] = E_AGAIN;
         frame[32] = @as(u64, cap.CAP_NULL);
