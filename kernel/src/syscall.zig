@@ -225,6 +225,7 @@ fn sysFrameFree(thread_id: sched.ThreadId, cap_idx: cap.CapIndex) u64 {
     const table = sched.getCapTable(thread_id) orelse return E_BADCAP;
     const c = table.lookup(cap_idx) orelse return E_BADCAP;
     if (c.cap_type != .frame) return E_BADCAP;
+    if (!c.rights.write) return E_BADCAP; // freeing is destructive — requires write right
 
     frame_mod.global.free(@intCast(c.object)) catch return E_BADCAP;
     table.delete(cap_idx);
@@ -1631,6 +1632,18 @@ test "sysIpcRecvCapBlock drains pending before E_CLOSED" {
     // Second RecvCapBlock on closed+empty should return E_CLOSED
     const result = sysIpcRecvCapBlock(tid, &frame_buf, ep_cap, 0, 0);
     try testing.expectEqual(E_CLOSED, result);
+}
+
+test "sysFrameFree rejects frame cap without write right" {
+    const tid = testSetup();
+    defer testTeardown();
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    // Derive a read-only cap — should not be able to free the physical frame
+    const read_only: u8 = @bitCast(cap.Rights{ .read = true });
+    const ro_cap: cap.CapIndex = @intCast(sysCapDerive(tid, frame_cap, read_only));
+    try testing.expectEqual(E_BADCAP, sysFrameFree(tid, ro_cap));
+    // Original cap (with write right) still frees successfully
+    try testing.expectEqual(E_OK, sysFrameFree(tid, frame_cap));
 }
 
 test "sysFrameFree rejects non-frame cap" {
