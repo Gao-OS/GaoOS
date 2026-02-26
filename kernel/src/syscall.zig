@@ -3064,6 +3064,43 @@ test "sysFrameFree returns E_BADCAP for read-only frame cap" {
     try testing.expectEqual(E_BADCAP, sysFrameFree(tid, ro_cap));
 }
 
+test "sysIpcSend automatically wakes a thread blocked on the target endpoint" {
+    // Integration test: sysIpcSend internally calls wakeBlockedRecv after enqueuing.
+    // A thread blocked on an endpoint via sysIpcRecvBlock must transition to .ready
+    // when another thread sends to that endpoint.
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    const ep_idx: sched.ThreadId = @intCast(sched.getCapTable(tid).?.lookup(ep_cap).?.object);
+
+    // Step 1: block the receiver thread on the endpoint
+    sched.global.threads[tid].state = .running;
+    sched.global.current = tid;
+    sched.global.has_current = true;
+    var frame_buf: [34]u64 = undefined;
+    _ = sysIpcRecvBlock(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(sched.ThreadState.blocked, sched.global.threads[tid].state);
+    try testing.expectEqual(ep_idx, sched.global.threads[tid].blocked_ep);
+
+    // Step 2: spawn a sender thread with access to the endpoint
+    const sender_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const sender_id = capObjectToId(sched.getCapTable(tid).?.lookup(sender_cap).?.object).?;
+    // Grant sender a write cap to the endpoint
+    const sender_table = sched.getCapTable(sender_id).?;
+    _ = try sender_table.create(.ipc_endpoint, @intCast(ep_idx), cap.Rights.ALL);
+    const sender_ep_cap: cap.CapIndex = 0; // cap at slot 0 in sender's table
+
+    // Step 3: sender sends a message — sysIpcSend calls wakeBlockedRecv internally
+    sched.global.threads[sender_id].state = .running;
+    sched.global.current = sender_id;
+    sched.global.has_current = true;
+    try testing.expectEqual(E_OK, sysIpcSend(sender_id, sender_ep_cap, 0, 0, 0x7777));
+
+    // Step 4: the blocked receiver thread must now be .ready
+    try testing.expectEqual(sched.ThreadState.ready, sched.global.threads[tid].state);
+    try testing.expectEqual(sched.THREAD_NONE, sched.global.threads[tid].blocked_ep);
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');
