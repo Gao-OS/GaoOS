@@ -2471,6 +2471,90 @@ test "dispatch returns E_BADSYS for unknown syscall number" {
     try testing.expectEqual(E_BADSYS, frame_buf[31]);
 }
 
+test "sysIpcSend wakes only one thread when multiple are blocked on same endpoint" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Spawn two receiver threads
+    const child1_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const child2_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const parent_table = sched.getCapTable(tid).?;
+    const child1_val = parent_table.lookup(child1_cap).?;
+    const child1_id = capObjectToId(child1_val.object).?;
+    const child2_val = parent_table.lookup(child2_cap).?;
+    const child2_id = capObjectToId(child2_val.object).?;
+
+    // Manually block both receivers on tid's endpoint
+    sched.global.threads[child1_id].state = .blocked;
+    sched.global.threads[child1_id].blocked_ep = tid;
+    sched.global.threads[child2_id].state = .blocked;
+    sched.global.threads[child2_id].blocked_ep = tid;
+
+    // Send a message to tid's own endpoint → wakeBlockedRecv(tid) called internally
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 0));
+
+    // wakeBlockedRecv wakes the first blocked thread found (child1, lower index)
+    try testing.expectEqual(sched.ThreadState.ready, sched.global.threads[child1_id].state);
+    try testing.expectEqual(sched.ThreadState.blocked, sched.global.threads[child2_id].state);
+}
+
+test "sysIpcSendCap + sysIpcRecvCap cross-thread: receiver uses transferred frame cap" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Sender allocates a frame
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    const phys = sysFramePhys(tid, frame_cap);
+    try testing.expect(phys >= frame_mod.USER_POOL_START);
+
+    // Spawn receiver
+    const recv_cap_idx: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const parent_table = sched.getCapTable(tid).?;
+    const recv_val = parent_table.lookup(recv_cap_idx).?;
+    const recv_id = capObjectToId(recv_val.object).?;
+
+    // Sender creates a cap pointing to receiver's endpoint
+    const sender_ep = parent_table.create(.ipc_endpoint, @intCast(recv_id), cap.Rights.ALL) catch unreachable;
+
+    // Receiver creates ep cap for their own endpoint
+    const recv_table = sched.getCapTable(recv_id).?;
+    const recv_own_ep = recv_table.create(.ipc_endpoint, @intCast(recv_id), cap.Rights.ALL) catch unreachable;
+
+    // Sender sends the frame cap to receiver's endpoint (cap is MOVED)
+    try testing.expectEqual(E_OK, sysIpcSendCap(tid, sender_ep, 0, 0, frame_cap));
+
+    // Receiver dequeues the message and gets the transferred cap index
+    var recv_frame = [_]u64{0} ** 34;
+    _ = sysIpcRecvCap(recv_id, &recv_frame, recv_own_ep, 0, 0);
+    const new_cap_idx: cap.CapIndex = @intCast(recv_frame[32]);
+    try testing.expect(new_cap_idx < 256);
+
+    // Receiver can use the transferred cap to get the same physical address
+    try testing.expectEqual(phys, sysFramePhys(recv_id, new_cap_idx));
+}
+
+test "sysEpGrant: recipient with read right can receive from granted endpoint" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const granted_idx: cap.CapIndex = @intCast(sysEpGrant(tid, ep_cap, child_cap));
+
+    const parent_table = sched.getCapTable(tid).?;
+    const child_val = parent_table.lookup(child_cap).?;
+    const child_id = capObjectToId(child_val.object).?;
+
+    // tid sends a message to its own endpoint
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 0xBEEF));
+
+    // Child (granted READ_WRITE) can receive from tid's endpoint using the granted cap
+    var recv_frame = [_]u64{0} ** 34;
+    _ = sysIpcRecv(child_id, &recv_frame, granted_idx, 0, 0);
+    try testing.expectEqual(@as(u64, 0xBEEF), recv_frame[32]); // tag
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');
