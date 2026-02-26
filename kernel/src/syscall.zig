@@ -2349,6 +2349,100 @@ test "sysExit with no supervisor kills thread cleanly" {
     try testing.expectEqual(sched.ThreadState.dead, sched.global.threads[tid].state);
 }
 
+test "sysThreadGrant: parent copies frame cap to child, child uses sysFramePhys" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Allocate a frame — SYS_FRAME_ALLOC grants ALL rights including grant
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    const phys = sysFramePhys(tid, frame_cap);
+    try testing.expect(phys >= frame_mod.USER_POOL_START);
+
+    // Create child thread
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+
+    // Grant (copy) frame cap to child
+    try testing.expectEqual(E_OK, sysThreadGrant(tid, child_cap, frame_cap));
+
+    // Parent's cap still exists — sysThreadGrant is a COPY, not a move
+    try testing.expectEqual(phys, sysFramePhys(tid, frame_cap));
+
+    // Resolve child ID and verify child received the cap at slot 0 (first free slot)
+    const parent_table = sched.getCapTable(tid).?;
+    const child_val = parent_table.lookup(child_cap).?;
+    const child_id = capObjectToId(child_val.object).?;
+    try testing.expectEqual(phys, sysFramePhys(child_id, 0));
+}
+
+test "sysSupervisorSet allows setting own endpoint as supervisor" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Create a self-referencing thread cap (requires write right for sysSupervisorSet)
+    const table = sched.getCapTable(tid).?;
+    const self_cap = table.create(.thread, @intCast(tid), cap.Rights.ALL) catch unreachable;
+
+    // Create an endpoint cap pointing to our own endpoint
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Set own endpoint as supervisor — no restriction prevents this
+    try testing.expectEqual(E_OK, sysSupervisorSet(tid, self_cap, ep_cap));
+    try testing.expectEqual(@as(u32, tid), sched.global.threads[tid].supervisor_ep);
+}
+
+test "sysCapDerive with ipc_endpoint cap preserves type and blocks send without write right" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // sysEpCreate gives ALL rights (including write)
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Derive a read-only endpoint cap: Rights = { read=1, write=0, grant=0, revoke=0 } → raw = 0b0001 = 1
+    const ro_ep: cap.CapIndex = @intCast(sysCapDerive(tid, ep_cap, 0b0001));
+    try testing.expect(ro_ep < 256);
+
+    // Type is preserved through derivation
+    try testing.expectEqual(
+        E_OK + @intFromEnum(cap.CapabilityType.ipc_endpoint),
+        sysCapRead(tid, ro_ep),
+    );
+
+    // Send requires write right — derived cap has none
+    try testing.expectEqual(E_BADCAP, sysIpcSend(tid, ro_ep, 0, 0, 0));
+}
+
+test "sysThreadKill drops fault notification when supervisor endpoint is full" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    _ = sysSupervisorSet(tid, child_cap, ep_cap);
+
+    // Fill the supervisor (tid's) endpoint queue to capacity
+    const ep = sched.getEndpoint(tid).?;
+    for (0..ipc.QUEUE_SIZE) |_| {
+        try ep.send(ipc.Message.init(1, "fill"), null, null);
+    }
+    try testing.expect(ep.isFull());
+
+    // Kill child — fault notification is best-effort; full queue drops it silently
+    try testing.expectEqual(E_OK, sysThreadKill(tid, child_cap));
+
+    // Queue count unchanged — fault was dropped, no overflow
+    try testing.expectEqual(@as(u32, ipc.QUEUE_SIZE), ep.count);
+}
+
+test "dispatch returns E_BADSYS for unknown syscall number" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    var frame_buf = [_]u64{0} ** 34;
+    frame_buf[6] = 9999; // Unknown syscall number
+    dispatch(tid, &frame_buf);
+    try testing.expectEqual(E_BADSYS, frame_buf[31]);
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');
