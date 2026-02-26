@@ -2051,6 +2051,38 @@ test "sysIpcSendCap rejects non-endpoint cap" {
     try testing.expectEqual(E_BADCAP, sysIpcSendCap(tid, 0, 0, 0, 0));
 }
 
+test "sysIpcSendCap rejects endpoint cap without write right" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    // Derive a read-only endpoint cap (no write right)
+    const table = sched.getCapTable(tid).?;
+    const ro_ep = table.derive(ep_cap, cap.Rights{ .read = true }) catch unreachable;
+    try testing.expectEqual(E_BADCAP, sysIpcSendCap(tid, ro_ep, 0, 0, frame_cap));
+}
+
+test "sysEpGrant rejects non-thread cap as target thread argument" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    // Pass frame cap (not a thread cap) as the target thread argument
+    try testing.expectEqual(E_BADCAP, sysEpGrant(tid, ep_cap, frame_cap));
+}
+
+test "sysEpCreate returns cap pointing to already-closed endpoint" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Close the endpoint first
+    sched.getEndpoint(tid).?.close();
+    // sysEpCreate still creates a cap — it just points to the closed endpoint
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    try testing.expect(ep_cap < 256);
+    // Sending on the closed-endpoint cap returns E_CLOSED
+    try testing.expectEqual(E_CLOSED, sysIpcSend(tid, ep_cap, 0, 0, 0));
+}
+
 test "sysIpcRecvCap rejects non-endpoint cap" {
     const tid = testSetup();
     defer testTeardown();
