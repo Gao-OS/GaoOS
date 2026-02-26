@@ -255,6 +255,9 @@ test "lookup invalid index returns null" {
     try testing.expect(table.lookup(0) == null);
     try testing.expect(table.lookup(255) == null);
     try testing.expect(table.lookup(CAP_NULL) == null);
+    // MAX_CAPS (256) is the first out-of-bounds index
+    try testing.expect(table.lookup(MAX_CAPS) == null);
+    try testing.expect(table.lookup(MAX_CAPS + 1) == null);
 }
 
 test "table full returns error" {

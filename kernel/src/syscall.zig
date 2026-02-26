@@ -832,6 +832,17 @@ test "sysFrameAlloc and sysFrameFree round-trip" {
     try testing.expectEqual(E_BADCAP, sysFrameFree(tid, cap_idx));
 }
 
+test "sysCapRead returns correct type for thread and endpoint caps" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Thread cap
+    const thread_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    try testing.expectEqual(E_OK + @intFromEnum(cap.CapabilityType.thread), sysCapRead(tid, thread_cap));
+    // Endpoint cap
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    try testing.expectEqual(E_OK + @intFromEnum(cap.CapabilityType.ipc_endpoint), sysCapRead(tid, ep_cap));
+}
+
 test "sysFramePhys returns physical address" {
     const tid = testSetup();
     defer testTeardown();
