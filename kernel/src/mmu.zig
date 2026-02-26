@@ -602,8 +602,15 @@ test "mapPage overwrites existing entry without allocating new tables" {
     const l0: *PageTable = @ptrCast(@alignCast(l0_mem.ptr));
 
     const flags = PageTableEntry{
-        .valid = 1, .type_table = 0, .attr_index = 0, .ns = 0,
-        .ap = 0, .sh = 0, .af = 1, .ng = 0, .output_pa = 0,
+        .valid = 1,
+        .type_table = 0,
+        .attr_index = 0,
+        .ns = 0,
+        .ap = 0,
+        .sh = 0,
+        .af = 1,
+        .ng = 0,
+        .output_pa = 0,
     };
 
     // First map: VA 0x1000 → PA 0x2000 (creates 3 tables)
@@ -632,8 +639,15 @@ test "unmapPage returns false when L1 entry is invalid" {
     const l0: *PageTable = @ptrCast(@alignCast(l0_mem.ptr));
 
     const flags = PageTableEntry{
-        .valid = 1, .type_table = 0, .attr_index = 0, .ns = 0,
-        .ap = 0, .sh = 0, .af = 1, .ng = 0, .output_pa = 0,
+        .valid = 1,
+        .type_table = 0,
+        .attr_index = 0,
+        .ns = 0,
+        .ap = 0,
+        .sh = 0,
+        .af = 1,
+        .ng = 0,
+        .output_pa = 0,
     };
 
     // Map VA 0x1000 (l0_idx=0, l1_idx=0) — creates L0[0] and L1[0..], but not L1[1]
@@ -652,8 +666,15 @@ test "unmapPage returns false when L2 entry is invalid" {
     const l0: *PageTable = @ptrCast(@alignCast(l0_mem.ptr));
 
     const flags = PageTableEntry{
-        .valid = 1, .type_table = 0, .attr_index = 0, .ns = 0,
-        .ap = 0, .sh = 0, .af = 1, .ng = 0, .output_pa = 0,
+        .valid = 1,
+        .type_table = 0,
+        .attr_index = 0,
+        .ns = 0,
+        .ap = 0,
+        .sh = 0,
+        .af = 1,
+        .ng = 0,
+        .output_pa = 0,
     };
 
     // Map VA 0x1000 (l2_idx=0) — creates L2[0..], but not L2[1]
