@@ -19,6 +19,16 @@ pub const BumpAllocator = struct {
         return .{};
     }
 
+    /// Free all frames held by this allocator.
+    pub fn deinit(self: *BumpAllocator) void {
+        for (self.frames[0..self.frame_count]) |cap_idx| {
+            _ = sys.frameFree(cap_idx);
+        }
+        self.frame_count = 0;
+        self.current_frame_phys = 0;
+        self.offset = 0;
+    }
+
     /// Allocate `size` bytes with the given alignment (must be power of 2).
     /// Returns a pointer to the allocated region, or null on failure.
     pub fn alloc(self: *BumpAllocator, size: u32, alignment: u32) ?[*]u8 {

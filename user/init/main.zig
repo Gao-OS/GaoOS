@@ -37,7 +37,7 @@ const UART_CAP: u32 = 0;
 const ORCH_EP_CAP: u32 = 1; // Orchestrator's endpoint (in its own table)
 const WORKER_A_EP_CAP: u32 = 1; // Worker A's cap pointing to orchestrator's endpoint
 
-const CAP_NULL: u32 = 0xFFFFFFFF;
+const CAP_NULL: u32 = sys.CAP_NULL;
 const TOTAL_WORKERS: u32 = 3;
 
 // ─── Worker A ────────────────────────────────────────────────────────
@@ -141,7 +141,7 @@ export fn user_main() void {
             break;
         }
 
-        const len: usize = @intCast(@as(u64, @bitCast(rcap.payload_len)));
+        const len: usize = @min(@as(usize, @intCast(@as(u64, @bitCast(rcap.payload_len)))), buf.len);
 
         if (rcap.cap_idx != CAP_NULL) {
             // Capability transfer from Worker A
@@ -179,7 +179,7 @@ export fn user_main() void {
     {
         const rcap = ipc_lib.recvWithCapBlocking(ORCH_EP_CAP, &buf);
         if (rcap.payload_len >= 0) {
-            const len: usize = @intCast(@as(u64, @bitCast(rcap.payload_len)));
+            const len: usize = @min(@as(usize, @intCast(@as(u64, @bitCast(rcap.payload_len)))), buf.len);
             if (fault_lib.parse(buf[0..len])) |fm| {
                 fault_count += 1;
                 io.print(UART_CAP, "Orchestrator: fault from thread ");

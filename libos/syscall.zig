@@ -11,6 +11,9 @@ pub const E_FULL: i64 = -5; // Queue or table full
 pub const E_CLOSED: i64 = -6; // Endpoint closed (owner died)
 pub const E_AGAIN: i64 = -7; // No matching message (non-blocking recv)
 
+/// Sentinel for "no capability" — matches kernel's cap.CAP_NULL.
+pub const CAP_NULL: u32 = 0xFFFFFFFF;
+
 pub fn write(cap_idx: u32, buf: [*]const u8, len: usize) i64 {
     return asm volatile ("svc #0"
         : [ret] "={x0}" (-> i64),
