@@ -238,6 +238,9 @@ pub const Scheduler = struct {
 
     /// Wake one thread blocked on recv for the given endpoint.
     /// Called after a message is enqueued to an endpoint.
+    /// Single-wake-per-send semantics: the caller (IPC send syscall) enqueues
+    /// one message and wakes one waiter. Multiple waiters on the same endpoint
+    /// are woken by successive sends, in FIFO order (lowest thread ID first).
     pub fn wakeBlockedRecv(self: *Scheduler, ep_id: ThreadId) void {
         for (&self.threads) |*thread| {
             if (thread.state == .blocked and thread.blocked_ep == ep_id) {
@@ -880,4 +883,96 @@ test "getCapTable and getEndpoint return null at MAX_THREADS boundary" {
     // Last valid index returns non-null
     try testing.expect(getCapTable(MAX_THREADS - 1) != null);
     try testing.expect(getEndpoint(MAX_THREADS - 1) != null);
+}
+
+test "multiple sends wake multiple blocked waiters in FIFO order" {
+    var s = Scheduler{};
+    const t0 = try s.spawn();
+    const t1 = try s.spawn();
+    const t2 = try s.spawn();
+    const ep: ThreadId = 10;
+
+    // Block all three on the same endpoint
+    _ = s.schedule(); // t0 running
+    s.threads[t0].blocked_ep = ep;
+    s.blockCurrent();
+    _ = s.schedule(); // t1 running
+    s.threads[t1].blocked_ep = ep;
+    s.blockCurrent();
+    _ = s.schedule(); // t2 running
+    s.threads[t2].blocked_ep = ep;
+    s.blockCurrent();
+
+    // All three should be blocked
+    try testing.expectEqual(ThreadState.blocked, s.threads[t0].state);
+    try testing.expectEqual(ThreadState.blocked, s.threads[t1].state);
+    try testing.expectEqual(ThreadState.blocked, s.threads[t2].state);
+
+    // First wake → t0 (lowest index, FIFO)
+    s.wakeBlockedRecv(ep);
+    try testing.expectEqual(ThreadState.ready, s.threads[t0].state);
+    try testing.expectEqual(ThreadState.blocked, s.threads[t1].state);
+    try testing.expectEqual(ThreadState.blocked, s.threads[t2].state);
+
+    // Second wake → t1
+    s.wakeBlockedRecv(ep);
+    try testing.expectEqual(ThreadState.ready, s.threads[t1].state);
+    try testing.expectEqual(ThreadState.blocked, s.threads[t2].state);
+
+    // Third wake → t2
+    s.wakeBlockedRecv(ep);
+    try testing.expectEqual(ThreadState.ready, s.threads[t2].state);
+
+    // Fourth wake → no-op (no more waiters)
+    s.wakeBlockedRecv(ep);
+}
+
+test "kill wakes blocked waiter then waiter retries and sees closed endpoint" {
+    var s = Scheduler{};
+    const owner = try s.spawn();
+    const waiter = try s.spawn();
+
+    // Make waiter blocked on owner's endpoint
+    _ = s.schedule(); // owner running
+    s.threads[waiter].state = .blocked;
+    s.threads[waiter].blocked_ep = owner;
+
+    // Kill owner — closes endpoint, wakes waiter
+    s.kill(owner);
+
+    // Waiter should be ready (unblocked)
+    try testing.expectEqual(ThreadState.ready, s.threads[waiter].state);
+    try testing.expectEqual(THREAD_NONE, s.threads[waiter].blocked_ep);
+
+    // Owner's endpoint should be closed
+    const ep = getEndpoint(owner).?;
+    try testing.expect(ep.closed);
+
+    // Waiter's next recv attempt would find endpoint closed (tested at syscall level)
+    s.kill(waiter);
+    s.reap(owner);
+    s.reap(waiter);
+}
+
+test "kill thread blocked on different endpoint does not wake it" {
+    var s = Scheduler{};
+    const t0 = try s.spawn();
+    const t1 = try s.spawn();
+    const t2 = try s.spawn();
+
+    // t1 is blocked on t0's endpoint
+    _ = s.schedule();
+    s.threads[t1].state = .blocked;
+    s.threads[t1].blocked_ep = t0;
+
+    // Kill t2 — should NOT wake t1 (t1 is blocked on t0, not t2)
+    s.kill(t2);
+    try testing.expectEqual(ThreadState.blocked, s.threads[t1].state);
+    try testing.expectEqual(t0, s.threads[t1].blocked_ep);
+
+    s.kill(t0);
+    s.kill(t1);
+    s.reap(t0);
+    s.reap(t1);
+    s.reap(t2);
 }

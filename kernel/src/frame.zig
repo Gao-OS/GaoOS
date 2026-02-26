@@ -273,3 +273,18 @@ test "alloc after filling first bitmap word allocates from second word" {
     const next = try fa.alloc();
     try testing.expectEqual(USER_POOL_START + 64 * FRAME_SIZE, next);
 }
+
+test "TOTAL_FRAMES matches expected pool calculation" {
+    // Verify the frame pool size matches our expectations:
+    // Pool: 0x400000 to 0x3FFFFFF = 62914560 bytes = 15360 frames of 4096 bytes
+    const expected: u32 = 15360;
+    try testing.expectEqual(expected, TOTAL_FRAMES);
+    // Verify the pool fits within the 64MB address range (0x0 to 0x3FFFFFF)
+    const pool_end_addr = USER_POOL_START + @as(u64, TOTAL_FRAMES) * FRAME_SIZE - 1;
+    try testing.expect(pool_end_addr <= USER_POOL_END);
+}
+
+test "init sets free_count to TOTAL_FRAMES" {
+    const fa = FrameAllocator.init();
+    try testing.expectEqual(TOTAL_FRAMES, fa.free_count);
+}

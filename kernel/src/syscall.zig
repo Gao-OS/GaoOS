@@ -2805,6 +2805,91 @@ test "sysThreadReap rejects cap without write right" {
     try testing.expectEqual(E_BADCAP, sysThreadReap(tid, ro_cap));
 }
 
+test "sysIpcRecvBlock: blocked thread wakes after kill sees closed endpoint" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Create a child thread that will "own" an endpoint
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const table = sched.getCapTable(tid).?;
+    const child_val = table.lookup(child_cap).?;
+    const child_id = capObjectToId(child_val.object).?;
+
+    // Parent creates an endpoint cap pointing to child's endpoint
+    const ep_to_child = table.create(.ipc_endpoint, @intCast(child_id), cap.Rights.ALL) catch unreachable;
+
+    // Parent tries blocking recv on child's endpoint — no message, blocks
+    sched.global.threads[tid].state = .running;
+    sched.global.current = tid;
+    sched.global.has_current = true;
+    var frame_buf: [34]u64 = undefined;
+    _ = sysIpcRecvBlock(tid, &frame_buf, ep_to_child, 0, 0);
+    try testing.expectEqual(sched.ThreadState.blocked, sched.global.threads[tid].state);
+
+    // Kill child — closes child's endpoint, wakes parent
+    sched.global.kill(child_id);
+    try testing.expectEqual(sched.ThreadState.ready, sched.global.threads[tid].state);
+
+    // Parent retries recv — endpoint is closed, should get E_CLOSED
+    sched.global.threads[tid].state = .running;
+    sched.global.current = tid;
+    sched.global.has_current = true;
+    const result = sysIpcRecvBlock(tid, &frame_buf, ep_to_child, 0, 0);
+    try testing.expectEqual(E_CLOSED, result);
+}
+
+test "sysThreadKill on self-supervised child drops fault notification silently" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Create a child thread
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const table = sched.getCapTable(tid).?;
+    const child_val = table.lookup(child_cap).?;
+    const child_id = capObjectToId(child_val.object).?;
+
+    // Set child as its own supervisor (self-supervision)
+    const child_table = sched.getCapTable(child_id).?;
+    const child_self_thread_cap = child_table.create(.thread, @intCast(child_id), cap.Rights.ALL) catch unreachable;
+    const child_ep_cap = child_table.create(.ipc_endpoint, @intCast(child_id), cap.Rights.ALL) catch unreachable;
+    _ = child_self_thread_cap;
+
+    // Set child's supervisor endpoint to itself
+    sched.global.threads[child_id].supervisor_ep = child_id;
+    _ = child_ep_cap;
+
+    // Kill child — should NOT crash. Fault notification goes to child's own
+    // endpoint, which is closed by kill(). notify() drops silently.
+    const result = sysThreadKill(tid, child_cap);
+    try testing.expectEqual(E_OK, result);
+    try testing.expectEqual(sched.ThreadState.dead, sched.global.threads[child_id].state);
+}
+
+test "sysIpcSendCap wakes blocked receiver" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Create receiver thread
+    const recv_cap_idx: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const table = sched.getCapTable(tid).?;
+    const recv_val = table.lookup(recv_cap_idx).?;
+    const recv_id = capObjectToId(recv_val.object).?;
+
+    // Block receiver on its own endpoint
+    sched.global.threads[recv_id].state = .blocked;
+    sched.global.threads[recv_id].blocked_ep = recv_id;
+
+    // Sender creates ep cap to receiver and sends a frame cap
+    const sender_ep = table.create(.ipc_endpoint, @intCast(recv_id), cap.Rights.ALL) catch unreachable;
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+
+    const result = sysIpcSendCap(tid, sender_ep, 0, 0, frame_cap);
+    try testing.expectEqual(E_OK, result);
+
+    // Receiver should be woken (ready, not blocked)
+    try testing.expectEqual(sched.ThreadState.ready, sched.global.threads[recv_id].state);
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');
