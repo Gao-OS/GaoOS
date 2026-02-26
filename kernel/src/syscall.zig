@@ -616,6 +616,7 @@ fn sysIpcSendCap(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u
 fn sysIpcRecvCap(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex, buf_ptr: u64, tag_filter: u64) u64 {
     const resolved = resolveRecvEndpoint(thread_id, ep_cap_idx) orelse {
         frame[31] = E_BADCAP;
+        frame[32] = @as(u64, cap.CAP_NULL);
         return E_BADCAP;
     };
     const ep = resolved.ep;
@@ -651,6 +652,7 @@ fn sysIpcRecvCap(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIn
 fn sysIpcRecvCapBlock(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex, buf_ptr: u64, tag_filter: u64) u64 {
     const resolved = resolveRecvEndpoint(thread_id, ep_cap_idx) orelse {
         frame[31] = E_BADCAP;
+        frame[32] = @as(u64, cap.CAP_NULL);
         return E_BADCAP;
     };
     const ep = resolved.ep;
@@ -3226,6 +3228,32 @@ test "sysIpcRecvBlock returns zero tag in frame[32] on blocking E_AGAIN" {
     // x1 (frame[32]) must be 0 on the blocking path, not stale
     try testing.expectEqual(E_AGAIN, frame_buf[31]);
     try testing.expectEqual(@as(u64, 0), frame_buf[32]);
+}
+
+test "sysIpcRecvCap sets frame[32] to CAP_NULL on E_BADCAP" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    var frame_buf: [34]u64 = undefined;
+    frame_buf[32] = 0xDEADBEEF; // sentinel — must be overwritten
+    _ = sysIpcRecvCap(tid, &frame_buf, 0xFF, 0, 0); // invalid cap index
+    try testing.expectEqual(E_BADCAP, frame_buf[31]);
+    try testing.expectEqual(@as(u64, cap.CAP_NULL), frame_buf[32]);
+}
+
+test "sysIpcRecvCapBlock sets frame[32] to CAP_NULL on E_BADCAP" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    sched.global.threads[tid].state = .running;
+    sched.global.current = tid;
+    sched.global.has_current = true;
+
+    var frame_buf: [34]u64 = undefined;
+    frame_buf[32] = 0xDEADBEEF;
+    _ = sysIpcRecvCapBlock(tid, &frame_buf, 0xFF, 0, 0);
+    try testing.expectEqual(E_BADCAP, frame_buf[31]);
+    try testing.expectEqual(@as(u64, cap.CAP_NULL), frame_buf[32]);
 }
 
 test "sysIpcRecv with zero-length payload and non-null buf_ptr succeeds" {
