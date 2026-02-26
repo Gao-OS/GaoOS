@@ -503,3 +503,86 @@ test "mapPage returns error when allocator exhausted" {
     const result = mapPage(l0, 0x0000_0100_0000_0000, 0x4000, pool.allocator(), flags);
     try testing.expectError(error.OutOfMemory, result);
 }
+
+test "unmapPage then remap to different physical address" {
+    var pool = TestTablePool.init();
+    defer pool.deinit();
+
+    const l0_mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
+    defer std.heap.page_allocator.free(l0_mem);
+    @memset(l0_mem, 0);
+    const l0: *PageTable = @ptrCast(@alignCast(l0_mem.ptr));
+
+    const flags = PageTableEntry{
+        .valid = 1,
+        .type_table = 0,
+        .attr_index = 0,
+        .ns = 0,
+        .ap = 0,
+        .sh = 0,
+        .af = 1,
+        .ng = 0,
+        .output_pa = 0,
+    };
+
+    // Map VA 0x1000 → PA 0x2000
+    try mapPage(l0, 0x1000, 0x2000, pool.allocator(), flags);
+    const l3: *PageTable = blk: {
+        const l1: *PageTable = @ptrFromInt(@as(u64, l0[0].output_pa) << 12);
+        const l2: *PageTable = @ptrFromInt(@as(u64, l1[0].output_pa) << 12);
+        break :blk @ptrFromInt(@as(u64, l2[0].output_pa) << 12);
+    };
+    try testing.expectEqual(@as(u1, 1), l3[1].valid);
+    try testing.expectEqual(@as(u52, 0x2000 >> 12), l3[1].output_pa);
+
+    // Unmap, then remap to PA 0x5000
+    try testing.expect(unmapPage(l0, 0x1000));
+    try testing.expectEqual(@as(u1, 0), l3[1].valid);
+
+    // Remap reuses existing intermediate tables (no new pool slots)
+    const slots_before = pool.next;
+    try mapPage(l0, 0x1000, 0x5000, pool.allocator(), flags);
+    try testing.expectEqual(slots_before, pool.next); // no new tables allocated
+    try testing.expectEqual(@as(u1, 1), l3[1].valid);
+    try testing.expectEqual(@as(u52, 0x5000 >> 12), l3[1].output_pa);
+}
+
+test "unmapPage does not affect neighboring pages in same L3 table" {
+    var pool = TestTablePool.init();
+    defer pool.deinit();
+
+    const l0_mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
+    defer std.heap.page_allocator.free(l0_mem);
+    @memset(l0_mem, 0);
+    const l0: *PageTable = @ptrCast(@alignCast(l0_mem.ptr));
+
+    const flags = PageTableEntry{
+        .valid = 1,
+        .type_table = 0,
+        .attr_index = 0,
+        .ns = 0,
+        .ap = 0,
+        .sh = 0,
+        .af = 1,
+        .ng = 0,
+        .output_pa = 0,
+    };
+
+    // Map two adjacent pages (VA 0x1000 and 0x2000) — same L3 table
+    try mapPage(l0, 0x1000, 0xA000, pool.allocator(), flags);
+    try mapPage(l0, 0x2000, 0xB000, pool.allocator(), flags);
+
+    const l3: *PageTable = blk: {
+        const l1: *PageTable = @ptrFromInt(@as(u64, l0[0].output_pa) << 12);
+        const l2: *PageTable = @ptrFromInt(@as(u64, l1[0].output_pa) << 12);
+        break :blk @ptrFromInt(@as(u64, l2[0].output_pa) << 12);
+    };
+    try testing.expectEqual(@as(u1, 1), l3[1].valid); // VA 0x1000 → L3 index 1
+    try testing.expectEqual(@as(u1, 1), l3[2].valid); // VA 0x2000 → L3 index 2
+
+    // Unmap only the first page
+    try testing.expect(unmapPage(l0, 0x1000));
+    try testing.expectEqual(@as(u1, 0), l3[1].valid); // first unmapped
+    try testing.expectEqual(@as(u1, 1), l3[2].valid); // neighbor intact
+    try testing.expectEqual(@as(u52, 0xB000 >> 12), l3[2].output_pa);
+}
