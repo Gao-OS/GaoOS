@@ -1428,6 +1428,23 @@ test "sysFrameAlloc rolls back on full cap table" {
     try testing.expectEqual(before_free, frame_mod.global.free_count);
 }
 
+test "sysThreadCreate rolls back thread spawn when cap table is full" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Fill caller's cap table (slot 0 has device cap from testSetup)
+    const table = sched.getCapTable(tid).?;
+    while (table.count < cap.MAX_CAPS) {
+        _ = table.create(.device, 0, cap.Rights.ALL) catch break;
+    }
+
+    // sysThreadCreate should spawn a thread, fail to create the cap, then kill+reap
+    const before_count = sched.global.count;
+    try testing.expectEqual(E_FULL, sysThreadCreate(tid, 0x200000, 0x300000));
+    // Thread count unchanged — rollback freed the slot
+    try testing.expectEqual(before_count, sched.global.count);
+}
+
 test "sysThreadKill rejects already-dead thread" {
     const tid = testSetup();
     defer testTeardown();
