@@ -729,3 +729,34 @@ test "resetCapTable clears all slots and count" {
     try testing.expect(!cap_tables[id].slots[0].valid);
     try testing.expect(!cap_tables[id].slots[1].valid);
 }
+
+test "schedule wraps from last slot to first" {
+    // Fill table with one thread at the last slot, one at slot 0.
+    // After scheduling the last slot, the next schedule must wrap to slot 0.
+    var s = Scheduler{};
+
+    // Spawn into slot 0 (first spawn)
+    const t0 = try s.spawn();
+
+    // Spawn 63 more to fill up to the last slot (MAX_THREADS-1)
+    var last_id: ThreadId = t0;
+    for (1..MAX_THREADS) |_| {
+        last_id = try s.spawn();
+    }
+    // last_id is now MAX_THREADS-1
+
+    // Schedule the last slot as "current"
+    s.current = last_id;
+    s.has_current = true;
+    s.threads[last_id].state = .running;
+    // Make all others dead except t0
+    for (1..MAX_THREADS) |i| {
+        if (i != last_id) s.threads[i].state = .dead;
+    }
+    s.threads[t0].state = .ready;
+
+    // schedule() should wrap around from last_id+1 → finds t0
+    const next = s.schedule().?;
+    try testing.expectEqual(t0, next.id);
+    try testing.expectEqual(ThreadState.running, next.state);
+}
