@@ -109,6 +109,24 @@ fn resolveRecvEndpoint(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex) ?Rec
     return .{ .ep = ep, .ep_idx = ep_idx };
 }
 
+/// Resolve an endpoint capability for send-side syscalls.
+/// Returns the validated endpoint pointer, its index, and the sender's cap table.
+const SendEndpoint = struct {
+    ep: *ipc.Endpoint,
+    ep_idx: sched.ThreadId,
+    table: *cap.CapabilityTable,
+};
+
+fn resolveSendEndpoint(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex) ?SendEndpoint {
+    const table = sched.getCapTable(thread_id) orelse return null;
+    const c = table.lookup(ep_cap_idx) orelse return null;
+    if (c.cap_type != .ipc_endpoint) return null;
+    if (!c.rights.write) return null;
+    const ep_idx = capObjectToId(c.object) orelse return null;
+    const ep = sched.getEndpoint(ep_idx) orelse return null;
+    return .{ .ep = ep, .ep_idx = ep_idx, .table = table };
+}
+
 /// Returns true for syscalls that require an immediate reschedule after dispatch.
 pub fn shouldReschedule(syscall_num: u64) bool {
     return syscall_num == SYS_YIELD or
@@ -296,13 +314,7 @@ fn sysFramePhys(thread_id: sched.ThreadId, cap_idx: cap.CapIndex) u64 {
 // ─── IPC syscalls (M2.4) ────────────────────────────────────────────
 
 fn sysIpcSend(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u64, msg_len: u64, tag: u64) u64 {
-    const table = sched.getCapTable(thread_id) orelse return E_BADCAP;
-    const c = table.lookup(ep_cap_idx) orelse return E_BADCAP;
-    if (c.cap_type != .ipc_endpoint) return E_BADCAP;
-    if (!c.rights.write) return E_BADCAP;
-
-    const ep_idx = capObjectToId(c.object) orelse return E_BADCAP;
-    const ep = sched.getEndpoint(ep_idx) orelse return E_BADCAP;
+    const resolved = resolveSendEndpoint(thread_id, ep_cap_idx) orelse return E_BADCAP;
 
     const len: u32 = @intCast(@min(msg_len, ipc.MAX_PAYLOAD));
     if (len > 0 and !isValidUserRange(msg_ptr, len)) return E_BADARG;
@@ -314,7 +326,7 @@ fn sysIpcSend(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u64,
         @memcpy(msg.payload[0..len], src[0..len]);
     }
 
-    ep.send(msg, null, null) catch |err| {
+    resolved.ep.send(msg, null, null) catch |err| {
         return switch (err) {
             error.QueueFull => E_FULL,
             error.EndpointClosed => E_CLOSED,
@@ -323,9 +335,7 @@ fn sysIpcSend(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u64,
         };
     };
 
-    // Wake any thread blocked on recv for this endpoint
-    sched.global.wakeBlockedRecv(ep_idx);
-
+    sched.global.wakeBlockedRecv(resolved.ep_idx);
     return E_OK;
 }
 
@@ -557,22 +567,15 @@ fn sysThreadKill(thread_id: sched.ThreadId, thread_cap_idx: cap.CapIndex) u64 {
 // ─── Cap delegation syscalls (M3.2) ──────────────────────────────────
 
 fn sysIpcSendCap(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u64, msg_len: u64, cap_to_send: cap.CapIndex) u64 {
-    const sender_table = sched.getCapTable(thread_id) orelse return E_BADCAP;
-
-    // Validate endpoint cap
-    const ep_cap_val = sender_table.lookup(ep_cap_idx) orelse return E_BADCAP;
-    if (ep_cap_val.cap_type != .ipc_endpoint) return E_BADCAP;
-    if (!ep_cap_val.rights.write) return E_BADCAP;
+    const resolved = resolveSendEndpoint(thread_id, ep_cap_idx) orelse return E_BADCAP;
+    const sender_table = resolved.table;
 
     // Validate the capability to transfer (must exist and have grant right)
     const src_cap = sender_table.lookup(cap_to_send) orelse return E_BADCAP;
     if (!src_cap.rights.grant) return E_BADCAP;
 
-    const ep_idx = capObjectToId(ep_cap_val.object) orelse return E_BADCAP;
-    const ep = sched.getEndpoint(ep_idx) orelse return E_BADCAP;
-
     // Receiver's cap table: endpoint[i] is owned by thread i
-    const receiver_table = sched.getCapTable(ep_idx) orelse return E_BADCAP;
+    const receiver_table = sched.getCapTable(resolved.ep_idx) orelse return E_BADCAP;
 
     const len: u32 = @intCast(@min(msg_len, ipc.MAX_PAYLOAD));
     if (len > 0 and !isValidUserRange(msg_ptr, len)) return E_BADARG;
@@ -584,7 +587,7 @@ fn sysIpcSendCap(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u
     }
     msg.attachCap(cap_to_send) catch return E_BADARG;
 
-    ep.send(msg, sender_table, receiver_table) catch |err| {
+    resolved.ep.send(msg, sender_table, receiver_table) catch |err| {
         return switch (err) {
             error.QueueFull => E_FULL,
             error.EndpointClosed => E_CLOSED,
@@ -593,9 +596,7 @@ fn sysIpcSendCap(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u
         };
     };
 
-    // Wake any thread blocked on recv for this endpoint
-    sched.global.wakeBlockedRecv(ep_idx);
-
+    sched.global.wakeBlockedRecv(resolved.ep_idx);
     return E_OK;
 }
 
@@ -724,6 +725,27 @@ test "capObjectToId rejects out-of-range values" {
     try testing.expect(capObjectToId(64) == null);
     try testing.expect(capObjectToId(0xFFFFFFFF) == null);
     try testing.expect(capObjectToId(0xDEAD) == null);
+}
+
+test "shouldReschedule identifies correct syscalls" {
+    // These four syscalls must trigger an immediate reschedule
+    try testing.expect(shouldReschedule(SYS_YIELD));
+    try testing.expect(shouldReschedule(SYS_EXIT));
+    try testing.expect(shouldReschedule(SYS_IPC_RECV_BLOCK));
+    try testing.expect(shouldReschedule(SYS_IPC_RECV_CAP_BLOCK));
+
+    // All other syscalls must NOT trigger reschedule
+    try testing.expect(!shouldReschedule(SYS_WRITE));
+    try testing.expect(!shouldReschedule(SYS_CAP_READ));
+    try testing.expect(!shouldReschedule(SYS_FRAME_ALLOC));
+    try testing.expect(!shouldReschedule(SYS_IPC_SEND));
+    try testing.expect(!shouldReschedule(SYS_IPC_RECV));
+    try testing.expect(!shouldReschedule(SYS_EP_CREATE));
+    try testing.expect(!shouldReschedule(SYS_THREAD_CREATE));
+    try testing.expect(!shouldReschedule(SYS_IPC_SEND_CAP));
+    try testing.expect(!shouldReschedule(SYS_IPC_RECV_CAP));
+    try testing.expect(!shouldReschedule(SYS_THREAD_KILL));
+    try testing.expect(!shouldReschedule(999)); // unknown
 }
 
 // ─── Syscall handler tests ───────────────────────────────────────────
