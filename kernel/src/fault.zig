@@ -81,7 +81,7 @@ pub fn notify(
 ) void {
     const thread = sched.global.getThread(thread_id) orelse return;
     const sup_ep_idx = thread.supervisor_ep;
-    if (sup_ep_idx == 0xFFFFFFFF) return;
+    if (sup_ep_idx == sched.THREAD_NONE) return;
 
     const ep = sched.getEndpoint(sup_ep_idx) orelse return;
     notifyEndpoint(ep, reason, thread_id, fault_addr, esr);
@@ -268,8 +268,8 @@ test "notify skips thread with no supervisor" {
     sched.global = .{};
 
     const id = try sched.global.spawn();
-    // supervisor_ep defaults to 0xFFFFFFFF (none)
-    try testing.expectEqual(@as(u32, 0xFFFFFFFF), sched.global.threads[id].supervisor_ep);
+    // supervisor_ep defaults to THREAD_NONE (none)
+    try testing.expectEqual(sched.THREAD_NONE, sched.global.threads[id].supervisor_ep);
 
     // This should be a no-op — no crash, no message sent anywhere
     notify(id, .killed, 0xDEAD, 0);
@@ -344,8 +344,8 @@ test "notify on thread with self-supervision drops silently" {
 test "notify on thread with no supervisor is a no-op" {
     const id = try sched.global.spawn();
     _ = sched.global.schedule();
-    // supervisor_ep defaults to 0xFFFFFFFF (none)
-    try testing.expectEqual(@as(u32, 0xFFFFFFFF), sched.global.threads[id].supervisor_ep);
+    // supervisor_ep defaults to THREAD_NONE (none)
+    try testing.expectEqual(sched.THREAD_NONE, sched.global.threads[id].supervisor_ep);
 
     // Should not panic or crash — just returns immediately
     notify(id, .killed, 0xBEEF, 0xCAFE);

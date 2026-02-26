@@ -1993,8 +1993,8 @@ test "sysThreadKill with no supervisor kills thread cleanly" {
     defer testTeardown();
     const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
     const child_id = capObjectToId(sched.getCapTable(tid).?.lookup(child_cap).?.object).?;
-    // child has no supervisor by default (supervisor_ep = 0xFFFFFFFF)
-    try testing.expectEqual(@as(u32, 0xFFFFFFFF), sched.global.threads[child_id].supervisor_ep);
+    // child has no supervisor by default (supervisor_ep = THREAD_NONE)
+    try testing.expectEqual(sched.THREAD_NONE, sched.global.threads[child_id].supervisor_ep);
     // Kill must succeed without crashing despite missing supervisor
     try testing.expectEqual(E_OK, sysThreadKill(tid, child_cap));
     try testing.expectEqual(sched.ThreadState.dead, sched.global.threads[child_id].state);
@@ -2334,8 +2334,8 @@ test "sysIpcRecvCap returns E_AGAIN on closed empty endpoint" {
 test "sysExit with no supervisor kills thread cleanly" {
     const tid = testSetup();
     defer testTeardown();
-    // testSetup gives supervisor_ep = 0xFFFFFFFF (no supervisor) by default
-    try testing.expectEqual(@as(u32, 0xFFFFFFFF), sched.global.threads[tid].supervisor_ep);
+    // testSetup gives supervisor_ep = THREAD_NONE (no supervisor) by default
+    try testing.expectEqual(sched.THREAD_NONE, sched.global.threads[tid].supervisor_ep);
     // Exit must succeed without crashing despite missing supervisor
     try testing.expectEqual(E_OK, sysExit(tid));
     try testing.expectEqual(sched.ThreadState.dead, sched.global.threads[tid].state);
