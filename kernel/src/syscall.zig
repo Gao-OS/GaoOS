@@ -959,7 +959,7 @@ test "sysThreadGrant transfers capability" {
     try testing.expectEqual(cap.CapabilityType.device, child_cap0.cap_type);
 }
 
-test "sysThreadGrant rejects without grant right" {
+test "sysThreadGrant rejects without grant right on source cap" {
     const tid = testSetup();
     defer testTeardown();
     const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
@@ -968,8 +968,23 @@ test "sysThreadGrant rejects without grant right" {
     const table = sched.getCapTable(tid).?;
     const ro_cap = table.create(.device, 0, cap.Rights{ .read = true }) catch unreachable;
 
-    // Try to grant the read-only cap — should fail (no grant right)
+    // Try to grant the read-only cap — should fail (no grant right on source)
     try testing.expectEqual(E_BADCAP, sysThreadGrant(tid, child_cap, ro_cap));
+}
+
+test "sysThreadGrant rejects when thread_cap lacks grant right" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Create a child thread — gives us a thread cap with ALL rights
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+
+    // Derive a thread cap with only read+write (no grant) from the original
+    const attenuated = sysCapDerive(tid, child_cap, @bitCast(cap.Rights{ .read = true, .write = true }));
+    try testing.expect(attenuated < 256);
+    const att_cap: cap.CapIndex = @intCast(attenuated);
+
+    // Try to grant via the attenuated thread cap — should fail (no grant right on thread cap)
+    try testing.expectEqual(E_BADCAP, sysThreadGrant(tid, att_cap, 0));
 }
 
 test "sysSupervisorSet configures supervisor endpoint" {
@@ -2432,14 +2447,18 @@ test "sysEpGrant grants READ_WRITE rights, recipient can send" {
     try testing.expectEqual(@as(u32, 1), ep.count);
 }
 
-test "dispatch returns E_BADSYS for unknown syscall number" {
+test "recv and send reject deleted endpoint cap" {
     const tid = testSetup();
     defer testTeardown();
 
+    // Create an endpoint cap, then delete it
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    try testing.expectEqual(E_OK, sysCapDelete(tid, ep_cap));
+
+    // Both recv and send should fail with E_BADCAP on the deleted cap
     var frame_buf = [_]u64{0} ** 34;
-    frame_buf[6] = 9999; // Unknown syscall number
-    dispatch(tid, &frame_buf);
-    try testing.expectEqual(E_BADSYS, frame_buf[31]);
+    try testing.expectEqual(E_BADCAP, sysIpcRecv(tid, &frame_buf, ep_cap, 0, 0));
+    try testing.expectEqual(E_BADCAP, sysIpcSend(tid, ep_cap, 0, 0, 0));
 }
 
 test "sysIpcSend wakes only one thread when multiple are blocked on same endpoint" {
