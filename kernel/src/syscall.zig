@@ -1989,6 +1989,30 @@ test "sysCapDerive rejects non-existent cap index" {
     try testing.expectEqual(E_BADCAP, sysCapDerive(tid, 100, read_only));
 }
 
+test "sysCapDerive: high bits in rights byte are ignored (ABI boundary)" {
+    // rights_raw is a u8 from the syscall frame. The Rights packed struct uses
+    // only bits 0-3 (read/write/grant/revoke). Bits 4-7 map to _padding and are
+    // ignored by isSubsetOf, eql, and intersect — no rights escalation possible.
+    const tid = testSetup();
+    defer testTeardown();
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+
+    // 0xF1 = 0b11110001: read=1 + padding bits 4-7 all set
+    // derive with 0xF1 should behave identically to 0x01 (read-only)
+    const with_garbage: u8 = 0xF1;
+    const derived = sysCapDerive(tid, frame_cap, with_garbage);
+    try testing.expect(derived < 256); // succeeded
+
+    // The derived cap should have only read right (extra bits are ignored)
+    const derived_cap_idx: cap.CapIndex = @intCast(derived);
+    const table = sched.getCapTable(tid).?;
+    const c = table.lookup(derived_cap_idx).?;
+    try testing.expect(c.rights.read);
+    try testing.expect(!c.rights.write); // bit 1 not set in 0xF1
+    try testing.expect(!c.rights.grant); // bit 2 not set in 0xF1
+    try testing.expect(!c.rights.revoke); // bit 3 not set in 0xF1
+}
+
 test "sysCapRead rejects deleted cap" {
     const tid = testSetup();
     defer testTeardown();
