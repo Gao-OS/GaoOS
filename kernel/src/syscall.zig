@@ -2101,6 +2101,45 @@ test "sysCapRead returns irq and aspace cap types" {
     );
 }
 
+test "sysIpcRecvBlock with tag filter skips non-matching message" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 0xAAAA));
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 0xBBBB));
+    sched.global.threads[tid].state = .running;
+    sched.global.current = tid;
+    sched.global.has_current = true;
+    // Filter 0xBBBB: second message received, first left queued
+    var frame_buf: [34]u64 = undefined;
+    _ = sysIpcRecvBlock(tid, &frame_buf, ep_cap, 0, 0xBBBB);
+    try testing.expectEqual(@as(u64, 0xBBBB), frame_buf[32]); // matched message tag
+    try testing.expectEqual(sched.ThreadState.running, sched.global.threads[tid].state);
+    // First message still in queue
+    _ = sysIpcRecvBlock(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(@as(u64, 0xAAAA), frame_buf[32]);
+}
+
+test "sysIpcRecvCapBlock with tag filter skips non-matching message" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 0xAAAA));
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 0xBBBB));
+    sched.global.threads[tid].state = .running;
+    sched.global.current = tid;
+    sched.global.has_current = true;
+    // Filter 0xBBBB: second message received (0 bytes, no cap), thread not blocked
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvCapBlock(tid, &frame_buf, ep_cap, 0, 0xBBBB);
+    try testing.expectEqual(@as(u64, 0), result); // success
+    try testing.expectEqual(sched.ThreadState.running, sched.global.threads[tid].state);
+    // First message (0xAAAA) still queued — verify via sysIpcRecv
+    var recv_buf: [34]u64 = undefined;
+    _ = sysIpcRecv(tid, &recv_buf, ep_cap, 0, 0);
+    try testing.expectEqual(@as(u64, 0xAAAA), recv_buf[32]);
+}
+
 test "dispatch SYS_IPC_RECV_CAP_BLOCK does not clobber frame writes" {
     const tid = testSetup();
     defer testTeardown();
