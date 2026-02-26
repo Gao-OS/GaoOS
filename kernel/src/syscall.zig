@@ -2101,6 +2101,45 @@ test "sysCapRead returns irq and aspace cap types" {
     );
 }
 
+test "sysIpcSendCap returns E_FULL when receiver cap table is full" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const child_id = capObjectToId(sched.getCapTable(tid).?.lookup(child_cap).?.object).?;
+    // Fill the receiver's cap table to capacity
+    const child_table = sched.getCapTable(child_id).?;
+    while (child_table.count < cap.MAX_CAPS) {
+        _ = child_table.create(.device, 0, cap.Rights.ALL) catch break;
+    }
+    // Create a sender-side endpoint cap pointing at child's endpoint
+    const table = sched.getCapTable(tid).?;
+    const sender_ep = table.create(.ipc_endpoint, @intCast(child_id), cap.Rights.ALL) catch unreachable;
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    // Cap transfer fails because receiver's table is full
+    try testing.expectEqual(E_FULL, sysIpcSendCap(tid, sender_ep, 0, 0, frame_cap));
+}
+
+test "sysIpcSendCap sends cap to own endpoint (loopback, move semantics)" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    // Record physical address before send — cap will be moved (deleted from sender)
+    const phys_before = sysFramePhys(tid, frame_cap);
+    // Send to own endpoint: sender_table == receiver_table
+    // Cap transfer is a MOVE: original cap is deleted from sender's table
+    try testing.expectEqual(E_OK, sysIpcSendCap(tid, ep_cap, 0, 0, frame_cap));
+    // Receive the cap back
+    var frame_buf: [34]u64 = undefined;
+    _ = sysIpcRecvCap(tid, &frame_buf, ep_cap, 0, 0);
+    const received_cap: cap.CapIndex = @intCast(frame_buf[32]);
+    try testing.expect(received_cap != cap.CAP_NULL);
+    // Original cap slot was deleted (moved out of sender's table)
+    try testing.expectEqual(E_BADCAP, sysCapRead(tid, frame_cap));
+    // Received cap at new slot still references the same physical frame
+    try testing.expectEqual(phys_before, sysFramePhys(tid, received_cap));
+}
+
 test "dispatch SYS_EXIT updates ELR to idle loop" {
     const tid = testSetup();
     defer testTeardown();
