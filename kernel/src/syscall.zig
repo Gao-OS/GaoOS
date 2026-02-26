@@ -1924,6 +1924,54 @@ test "sysCapRead rejects deleted cap" {
     try testing.expectEqual(E_BADCAP, sysCapRead(tid, frame_cap));
 }
 
+test "sysSupervisorSet rejects non-thread cap as thread argument" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    const sup_ep: cap.CapIndex = @intCast(sysEpCreate(tid));
+    // Pass endpoint cap where thread cap is required
+    try testing.expectEqual(E_BADCAP, sysSupervisorSet(tid, ep_cap, sup_ep));
+}
+
+test "sysSupervisorSet rejects thread cap without write right" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    // Derive a read-only thread cap
+    const table = sched.getCapTable(tid).?;
+    const ro_thread = table.derive(child_cap, cap.Rights{ .read = true }) catch unreachable;
+    try testing.expectEqual(E_BADCAP, sysSupervisorSet(tid, ro_thread, ep_cap));
+}
+
+test "sysSupervisorSet rejects endpoint cap without write right" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    // Derive a read-only endpoint cap
+    const table = sched.getCapTable(tid).?;
+    const ro_ep = table.derive(ep_cap, cap.Rights{ .read = true }) catch unreachable;
+    try testing.expectEqual(E_BADCAP, sysSupervisorSet(tid, child_cap, ro_ep));
+}
+
+test "sysSupervisorSet can be updated by calling twice" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const child_id = capObjectToId(sched.getCapTable(tid).?.lookup(child_cap).?.object).?;
+    const ep1: cap.CapIndex = @intCast(sysEpCreate(tid));
+    const ep2: cap.CapIndex = @intCast(sysEpCreate(tid));
+    // Set first supervisor
+    try testing.expectEqual(E_OK, sysSupervisorSet(tid, child_cap, ep1));
+    const ep1_id = capObjectToId(sched.getCapTable(tid).?.lookup(ep1).?.object).?;
+    try testing.expectEqual(ep1_id, sched.global.threads[child_id].supervisor_ep);
+    // Override with second supervisor
+    try testing.expectEqual(E_OK, sysSupervisorSet(tid, child_cap, ep2));
+    const ep2_id = capObjectToId(sched.getCapTable(tid).?.lookup(ep2).?.object).?;
+    try testing.expectEqual(ep2_id, sched.global.threads[child_id].supervisor_ep);
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');
