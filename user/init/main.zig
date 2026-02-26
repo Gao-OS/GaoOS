@@ -141,7 +141,7 @@ export fn user_main() void {
             break;
         }
 
-        const len: usize = @min(@as(usize, @intCast(@as(u64, @bitCast(rcap.payload_len)))), buf.len);
+        const len: usize = if (rcap.payload_len > 0) @as(usize, @intCast(rcap.payload_len)) else 0;
 
         if (rcap.cap_idx != CAP_NULL) {
             // Capability transfer from Worker A
@@ -179,7 +179,7 @@ export fn user_main() void {
     {
         const rcap = ipc_lib.recvWithCapBlocking(ORCH_EP_CAP, &buf);
         if (rcap.payload_len >= 0) {
-            const len: usize = @min(@as(usize, @intCast(@as(u64, @bitCast(rcap.payload_len)))), buf.len);
+            const len: usize = if (rcap.payload_len > 0) @as(usize, @intCast(rcap.payload_len)) else 0;
             if (fault_lib.parse(buf[0..len])) |fm| {
                 fault_count += 1;
                 io.print(UART_CAP, "Orchestrator: fault from thread ");
