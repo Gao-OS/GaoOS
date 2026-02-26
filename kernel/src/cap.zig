@@ -620,6 +620,42 @@ test "fill all 256 slots and verify count matches linear scan" {
     try testing.expectEqual(@as(u32, MAX_CAPS), table.count);
 }
 
+test "delete then reuse slot invalidates old handles via generation" {
+    var table = CapabilityTable{};
+    const idx = try table.create(.frame, 0x1000, Rights.ALL);
+    const old_cap = table.lookup(idx).?;
+    const old_gen = old_cap.generation;
+
+    // Delete: generation bumps
+    table.delete(idx);
+    try testing.expect(table.lookup(idx) == null);
+
+    // Reuse the same slot: generation bumps again
+    const idx2 = try table.create(.device, 0x2000, Rights.READ_ONLY);
+    try testing.expectEqual(idx, idx2); // same slot reused
+    const new_cap = table.lookup(idx2).?;
+    try testing.expect(new_cap.generation != old_gen);
+    try testing.expectEqual(CapabilityType.device, new_cap.cap_type);
+    try testing.expectEqual(@as(usize, 0x2000), new_cap.object);
+}
+
+test "generation increments on each create-delete cycle" {
+    var table = CapabilityTable{};
+
+    // Track generation through multiple create/delete cycles on slot 0
+    var prev_gen: u32 = 0;
+    for (0..10) |_| {
+        const idx = try table.create(.frame, 0, Rights.ALL);
+        try testing.expectEqual(@as(CapIndex, 0), idx); // always reuses slot 0
+        const c = table.lookup(idx).?;
+        try testing.expect(c.generation > prev_gen);
+        prev_gen = c.generation;
+        table.delete(idx);
+    }
+    // After 10 create/delete cycles: 10 creates + 10 deletes = 20 increments
+    try testing.expectEqual(@as(u32, 20), table.slots[0].generation);
+}
+
 test "derive write-only cap" {
     var table = CapabilityTable{};
     const parent = try table.create(.frame, 0x1000, Rights.ALL);

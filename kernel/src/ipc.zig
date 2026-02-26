@@ -850,6 +850,62 @@ test "send with asymmetric table pointers skips transfer" {
     try testing.expectEqual(@as(u32, 0), receiver.count);
 }
 
+test "selective recv with no matching tag leaves queue unchanged" {
+    var ep = Endpoint{};
+    try ep.send(Message.init(42, "a"), null, null);
+    try ep.send(Message.init(99, "b"), null, null);
+    try ep.send(Message.init(7, "c"), null, null);
+
+    // No message has tag 888
+    try testing.expect(ep.recv(888) == null);
+    // Queue must be unchanged: 3 messages, same order
+    try testing.expectEqual(@as(u32, 3), ep.count);
+    try testing.expectEqual(@as(u64, 42), ep.recv(TAG_ANY).?.tag);
+    try testing.expectEqual(@as(u64, 99), ep.recv(TAG_ANY).?.tag);
+    try testing.expectEqual(@as(u64, 7), ep.recv(TAG_ANY).?.tag);
+    try testing.expect(ep.isEmpty());
+}
+
+test "selective recv on full 16-message queue extracts from middle" {
+    var ep = Endpoint{};
+    // Fill queue to capacity with tags 0..15
+    for (0..QUEUE_SIZE) |i| {
+        try ep.send(Message.init(@intCast(i), ""), null, null);
+    }
+    try testing.expect(ep.isFull());
+
+    // Extract tag=8 from the middle
+    const msg = ep.recv(8).?;
+    try testing.expectEqual(@as(u64, 8), msg.tag);
+    try testing.expectEqual(@as(u32, QUEUE_SIZE - 1), ep.count);
+
+    // Remaining 15 messages should be in FIFO order (0-7, 9-15)
+    for (0..QUEUE_SIZE) |i| {
+        if (i == 8) continue;
+        const m = ep.recv(TAG_ANY).?;
+        try testing.expectEqual(@as(u64, @intCast(i)), m.tag);
+    }
+    try testing.expect(ep.isEmpty());
+}
+
+test "closed endpoint still allows selective recv of pending messages" {
+    var ep = Endpoint{};
+    try ep.send(Message.init(1, "x"), null, null);
+    try ep.send(Message.init(2, "y"), null, null);
+    try ep.send(Message.init(3, "z"), null, null);
+    ep.close();
+
+    // Selective recv on closed endpoint with matching tag should work
+    const m = ep.recv(2).?;
+    try testing.expectEqual(@as(u64, 2), m.tag);
+    try testing.expectEqual(@as(u32, 2), ep.count);
+
+    // Remaining messages still there
+    try testing.expectEqual(@as(u64, 1), ep.recv(TAG_ANY).?.tag);
+    try testing.expectEqual(@as(u64, 3), ep.recv(TAG_ANY).?.tag);
+    try testing.expect(ep.isEmpty());
+}
+
 test "Message.init with 1-byte and MAX_PAYLOAD-1 byte payloads" {
     // 1-byte payload
     const m1 = Message.init(1, "x");

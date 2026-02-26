@@ -288,3 +288,37 @@ test "init sets free_count to TOTAL_FRAMES" {
     const fa = FrameAllocator.init();
     try testing.expectEqual(TOTAL_FRAMES, fa.free_count);
 }
+
+test "free_count stays consistent with bitmap through alloc/free cycles" {
+    var fa = FrameAllocator.init();
+
+    // Allocate 10 frames
+    var addrs: [10]u64 = undefined;
+    for (&addrs) |*a| a.* = try fa.alloc();
+    try testing.expectEqual(TOTAL_FRAMES - 10, fa.free_count);
+
+    // Free odd-indexed frames (5 total)
+    for (0..5) |i| try fa.free(addrs[i * 2 + 1]);
+    try testing.expectEqual(TOTAL_FRAMES - 5, fa.free_count);
+
+    // Reallocate those 5 — count should match
+    for (0..5) |_| _ = try fa.alloc();
+    try testing.expectEqual(TOTAL_FRAMES - 10, fa.free_count);
+
+    // Free all 10
+    for (&addrs) |a| try fa.free(a);
+    // Re-read addresses from second round (they reused the freed slots)
+    try testing.expectEqual(TOTAL_FRAMES, fa.free_count);
+}
+
+test "free rejects various misaligned addresses within pool" {
+    var fa = FrameAllocator.init();
+    // +1, +2, +4095 offset from a valid frame start
+    try testing.expectError(error.InvalidFrame, fa.free(USER_POOL_START + 1));
+    try testing.expectError(error.InvalidFrame, fa.free(USER_POOL_START + 2));
+    try testing.expectError(error.InvalidFrame, fa.free(USER_POOL_START + FRAME_SIZE - 1));
+    // Mid-pool misaligned
+    try testing.expectError(error.InvalidFrame, fa.free(USER_POOL_START + FRAME_SIZE * 100 + 512));
+    // USER_POOL_END itself is not page-aligned
+    try testing.expectError(error.InvalidFrame, fa.free(USER_POOL_END));
+}
