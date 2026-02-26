@@ -86,6 +86,28 @@ pub fn setTimerHandler(handler: *const fn () void) void {
 /// Assembly context switch (defined in context_switch.S).
 extern fn context_switch(old: *sched.Context, new: *sched.Context) void;
 
+/// Context switch that preserves ELR_EL1 and SPSR_EL1 across the switch.
+/// Each thread's exception frame lives on its own kernel stack, but the
+/// hardware ELR/SPSR registers are shared — we must save/restore them
+/// so vectors.S returns to the correct user-space PC and state.
+fn switchWithELR(old: *sched.Context, new: *sched.Context) void {
+    const saved_elr = asm ("mrs %[ret], elr_el1"
+        : [ret] "=r" (-> u64),
+    );
+    const saved_spsr = asm ("mrs %[ret], spsr_el1"
+        : [ret] "=r" (-> u64),
+    );
+    context_switch(old, new);
+    asm volatile ("msr elr_el1, %[v]"
+        :
+        : [v] "r" (saved_elr),
+    );
+    asm volatile ("msr spsr_el1, %[v]"
+        :
+        : [v] "r" (saved_spsr),
+    );
+}
+
 /// Called from vectors.S for all 16 exception vectors.
 /// type_id: 0-15 identifying which vector fired
 /// frame: pointer to saved register context on stack
@@ -135,26 +157,7 @@ export fn exception_handler(type_id: u64, frame: [*]u64) callconv(.{ .aarch64_aa
                 const old_id = sched.global.current;
                 if (sched.global.schedule()) |next| {
                     if (next.id != old_id) {
-                        // Save/restore ELR and SPSR across context switch.
-                        // Each thread's exception frame is on its own kernel stack,
-                        // but the hardware ELR/SPSR registers are shared — we must
-                        // preserve them so vectors.S restores the correct values.
-                        const saved_elr = asm ("mrs %[ret], elr_el1"
-                            : [ret] "=r" (-> u64),
-                        );
-                        const saved_spsr = asm ("mrs %[ret], spsr_el1"
-                            : [ret] "=r" (-> u64),
-                        );
-                        context_switch(&sched.global.threads[old_id].context, &next.context);
-                        // Resumed — restore our ELR/SPSR
-                        asm volatile ("msr elr_el1, %[v]"
-                            :
-                            : [v] "r" (saved_elr),
-                        );
-                        asm volatile ("msr spsr_el1, %[v]"
-                            :
-                            : [v] "r" (saved_spsr),
-                        );
+                        switchWithELR(&sched.global.threads[old_id].context, &next.context);
                     }
                 }
             }
@@ -228,21 +231,7 @@ export fn exception_handler(type_id: u64, frame: [*]u64) callconv(.{ .aarch64_aa
 
         // Reschedule: pick the next ready thread and context-switch to it
         if (sched.global.schedule()) |next| {
-            const saved_elr = asm ("mrs %[ret], elr_el1"
-                : [ret] "=r" (-> u64),
-            );
-            const saved_spsr = asm ("mrs %[ret], spsr_el1"
-                : [ret] "=r" (-> u64),
-            );
-            context_switch(&sched.global.threads[cur_id].context, &next.context);
-            asm volatile ("msr elr_el1, %[v]"
-                :
-                : [v] "r" (saved_elr),
-            );
-            asm volatile ("msr spsr_el1, %[v]"
-                :
-                : [v] "r" (saved_spsr),
-            );
+            switchWithELR(&sched.global.threads[cur_id].context, &next.context);
         } else {
             // No runnable threads remain — halt
             uart.puts("\n  No runnable threads — HALTED\n");

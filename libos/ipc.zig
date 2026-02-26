@@ -5,6 +5,7 @@
 const sys = @import("syscall.zig");
 
 pub const MAX_PAYLOAD = 256;
+/// Tag filter value that matches any message tag (kernel treats 0 as wildcard).
 pub const TAG_ANY: u64 = 0;
 
 /// Send a byte-slice message on an endpoint capability.

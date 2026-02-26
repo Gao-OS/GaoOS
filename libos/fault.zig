@@ -30,9 +30,7 @@ pub fn parse(buf: []const u8) ?FaultMsg {
     if (buf.len < @sizeOf(FaultMsg)) return null;
     var msg: FaultMsg = undefined;
     const dst: [*]u8 = @ptrCast(&msg);
-    for (0..@sizeOf(FaultMsg)) |i| {
-        dst[i] = buf[i];
-    }
+    @memcpy(dst[0..@sizeOf(FaultMsg)], buf[0..@sizeOf(FaultMsg)]);
     return msg;
 }
 
