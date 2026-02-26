@@ -134,7 +134,7 @@ export fn user_main() void {
     var got_frame = false;
     const VOLUNTARY_WORKERS: u32 = 2; // Worker A + E-Ink exit voluntarily
 
-    while (fault_count < VOLUNTARY_WORKERS) {
+    while (fault_count < VOLUNTARY_WORKERS or !got_frame) {
         const rcap = ipc_lib.recvWithCapBlocking(ORCH_EP_CAP, &buf);
         if (rcap.payload_len < 0) {
             io.println(UART_CAP, "Orchestrator: recv error!");
