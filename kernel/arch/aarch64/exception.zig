@@ -138,7 +138,12 @@ export fn exception_handler(type_id: u64, frame: [*]u64) callconv(.{ .aarch64_aa
             return;
         }
 
-        // Unknown IRQ — fall through to diagnostic handler
+        // Unknown IRQ — log and ignore (do NOT fall through to fault handler
+        // which would kill the running thread for a spurious interrupt)
+        uart.puts("[IRQ] unknown source=0x");
+        putHex64(@as(u64, source));
+        uart.putc('\n');
+        return;
     }
 
     // Read syndrome register early for fast-path checks
