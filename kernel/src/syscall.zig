@@ -944,6 +944,21 @@ test "sysThreadCreate succeeds with valid args" {
     try testing.expect(result < 256); // returns cap index
 }
 
+test "sysThreadCreate rejects stack at USER_MEM_START, accepts USER_MEM_START+16" {
+    // Stack validation uses `isValidUserRange(stack_ptr -| 1, 1)`.
+    // This requires stack_ptr - 1 >= USER_MEM_START, so stack_ptr > USER_MEM_START.
+    // Combined with 16-byte alignment, minimum valid SP = USER_MEM_START + 16.
+    const tid = testSetup();
+    defer testTeardown();
+
+    // stack_ptr = USER_MEM_START: (sp -| 1) is below user range → E_BADARG
+    try testing.expectEqual(E_BADARG, sysThreadCreate(tid, 0x200000, USER_MEM_START));
+
+    // stack_ptr = USER_MEM_START + 16: (sp -| 1) is in user range → succeeds
+    const result = sysThreadCreate(tid, 0x200000, USER_MEM_START + 16);
+    try testing.expect(result < 256);
+}
+
 test "sysThreadGrant transfers capability" {
     const tid = testSetup();
     defer testTeardown();
