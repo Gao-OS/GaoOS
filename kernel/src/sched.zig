@@ -84,12 +84,14 @@ pub fn getEndpoint(id: ThreadId) ?*ipc.Endpoint {
 /// Reset a thread's cap table (for reap/reuse).
 pub fn resetCapTable(id: ThreadId) void {
     if (id >= MAX_THREADS) return;
-    // Zero out field-by-field to avoid SIMD alignment issues
+    // Zero out field-by-field to avoid SIMD alignment issues.
+    // Preserve generation counters — resetting them would allow stale handles
+    // from a previous incarnation to pass validation after wraparound.
     cap_tables[id].count = 0;
     for (&cap_tables[id].slots) |*slot| {
         slot.valid = false;
         slot.cap = cap.Capability.INVALID;
-        slot.generation = 0;
+        // generation intentionally NOT reset — monotonically increasing
     }
 }
 

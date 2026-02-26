@@ -439,9 +439,13 @@ fn sysEpGrant(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, thread_cap_id
     const target_id = capObjectToId(thread_cap.object) orelse return E_BADCAP;
     const target_table = sched.getCapTable(target_id) orelse return E_BADCAP;
 
-    // Create read-write endpoint cap in target's table.
-    // The recipient typically needs write (to send) and read (to receive).
-    const new_idx = target_table.create(.ipc_endpoint, ep_cap.object, cap.Rights.READ_WRITE) catch {
+    // Attenuate: grant only the data-plane rights (read/write) from the source cap.
+    // Never propagate grant/revoke to the recipient — prevents rights escalation.
+    const granted_rights = cap.Rights{
+        .read = ep_cap.rights.read,
+        .write = ep_cap.rights.write,
+    };
+    const new_idx = target_table.create(.ipc_endpoint, ep_cap.object, granted_rights) catch {
         return E_FULL;
     };
     return @as(u64, new_idx);
@@ -2543,6 +2547,79 @@ test "sysEpGrant: recipient with read right can receive from granted endpoint" {
     var recv_frame = [_]u64{0} ** 34;
     _ = sysIpcRecv(child_id, &recv_frame, granted_idx, 0, 0);
     try testing.expectEqual(@as(u64, 0xBEEF), recv_frame[32]); // tag
+}
+
+test "sysEpGrant attenuates rights: no grant/revoke propagation" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid)); // ALL rights
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+
+    const granted_idx: cap.CapIndex = @intCast(sysEpGrant(tid, ep_cap, child_cap));
+
+    const parent_table = sched.getCapTable(tid).?;
+    const child_val = parent_table.lookup(child_cap).?;
+    const child_id = capObjectToId(child_val.object).?;
+    const child_table = sched.getCapTable(child_id).?;
+
+    const granted_cap = child_table.lookup(granted_idx).?;
+    try testing.expect(granted_cap.rights.read);
+    try testing.expect(granted_cap.rights.write);
+    // grant and revoke must NOT propagate — prevents escalation
+    try testing.expect(!granted_cap.rights.grant);
+    try testing.expect(!granted_cap.rights.revoke);
+}
+
+test "sysEpGrant from read-only source does not grant write" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid)); // ALL rights
+    // Derive a cap with read+grant only (no write)
+    const ro_ep: cap.CapIndex = @intCast(sysCapDerive(tid, ep_cap, @as(u8, @bitCast(cap.Rights{ .read = true, .grant = true }))));
+
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const granted_idx: cap.CapIndex = @intCast(sysEpGrant(tid, ro_ep, child_cap));
+
+    const parent_table = sched.getCapTable(tid).?;
+    const child_val = parent_table.lookup(child_cap).?;
+    const child_id = capObjectToId(child_val.object).?;
+    const child_table = sched.getCapTable(child_id).?;
+
+    const granted_cap = child_table.lookup(granted_idx).?;
+    try testing.expect(granted_cap.rights.read);
+    // write must NOT be granted — source only has read
+    try testing.expect(!granted_cap.rights.write);
+    try testing.expect(!granted_cap.rights.grant);
+}
+
+test "isValidUserRange rejects pointer past USER_MEM_END" {
+    // ptr at end with len=2 overflows past boundary
+    try testing.expect(!isValidUserRange(USER_MEM_END, 2));
+    // ptr at end with len=1 is exactly the last valid byte
+    try testing.expect(isValidUserRange(USER_MEM_END, 1));
+    // ptr below USER_MEM_START
+    try testing.expect(!isValidUserRange(0x100000, 1));
+    // Overflow: huge ptr + len wraps around
+    try testing.expect(!isValidUserRange(0xFFFFFFFFFFFFFFFF, 2));
+}
+
+test "isValidUserRange accepts full user memory range" {
+    const full_len = USER_MEM_END - USER_MEM_START + 1;
+    try testing.expect(isValidUserRange(USER_MEM_START, full_len));
+    // One byte beyond the full range should fail
+    try testing.expect(!isValidUserRange(USER_MEM_START, full_len + 1));
+}
+
+test "sysIpcSend with null ptr and non-zero length returns E_BADARG" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    // ptr=0 with len=10 — should be rejected by user range validation
+    const result = sysIpcSend(tid, ep_cap, 0, 10, 0);
+    try testing.expectEqual(E_BADARG, result);
 }
 
 fn putDec(val: u32) void {

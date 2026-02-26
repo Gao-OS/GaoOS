@@ -115,7 +115,12 @@ pub const Endpoint = struct {
                     src_cap.cap_type,
                     src_cap.object,
                     src_cap.rights,
-                ) catch unreachable; // pre-checked space
+                ) catch {
+                    // Pre-check said space was available, but count may be desynced.
+                    // Skip this cap rather than panicking the kernel.
+                    queued_msg.caps[i] = cap.CAP_NULL;
+                    continue;
+                };
 
                 s_table.delete(src_idx);
                 queued_msg.caps[i] = new_idx;
