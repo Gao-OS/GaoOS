@@ -611,3 +611,48 @@ test "selective receive can drain all messages of the same tag" {
     try testing.expectEqual(@as(u64, 1), rem.?.tag);
     try testing.expect(ep.isEmpty());
 }
+
+test "closed endpoint drains all pending messages" {
+    var ep = Endpoint{};
+    try ep.send(Message.init(1, "a"), null, null);
+    try ep.send(Message.init(2, "b"), null, null);
+    try ep.send(Message.init(3, "c"), null, null);
+    ep.close();
+
+    // All three messages still receivable even after close
+    const m1 = ep.recv(TAG_ANY);
+    try testing.expect(m1 != null);
+    try testing.expectEqual(@as(u64, 1), m1.?.tag);
+
+    const m2 = ep.recv(TAG_ANY);
+    try testing.expect(m2 != null);
+    try testing.expectEqual(@as(u64, 2), m2.?.tag);
+
+    const m3 = ep.recv(TAG_ANY);
+    try testing.expect(m3 != null);
+    try testing.expectEqual(@as(u64, 3), m3.?.tag);
+
+    // Queue now empty
+    try testing.expect(ep.recv(TAG_ANY) == null);
+    try testing.expect(ep.isEmpty());
+}
+
+test "double close is idempotent" {
+    var ep = Endpoint{};
+    try ep.send(Message.init(42, "hi"), null, null);
+    ep.close();
+    ep.close(); // Must not crash or corrupt state
+    try testing.expect(ep.closed);
+    try testing.expectEqual(@as(u32, 1), ep.count);
+    // Still drainable
+    const m = ep.recv(TAG_ANY);
+    try testing.expect(m != null);
+    try testing.expectEqual(@as(u64, 42), m.?.tag);
+}
+
+test "getPayload returns correct slice" {
+    const msg = Message.init(7, "hello");
+    const p = msg.getPayload();
+    try testing.expectEqual(@as(usize, 5), p.len);
+    try testing.expectEqualSlices(u8, "hello", p);
+}
