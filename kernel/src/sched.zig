@@ -1098,3 +1098,29 @@ test "kill thread blocked on different endpoint does not wake it" {
     s.reap(t1);
     s.reap(t2);
 }
+
+test "kill ready thread transitions directly to dead without ep side-effect" {
+    // A thread in .ready state (not yet scheduled) can be killed.
+    // The kill must close its endpoint and set state=dead;
+    // no wakeBlockedRecv side-effects should occur since no other thread
+    // is blocked on the ready thread's endpoint.
+    var s = Scheduler{};
+    const victim = try s.spawn(); // state = .ready
+    const bystander = try s.spawn(); // state = .ready, not blocked on victim
+
+    try testing.expectEqual(ThreadState.ready, s.threads[victim].state);
+    try testing.expect(!endpoints[victim].closed);
+
+    s.kill(victim);
+
+    // Victim is now dead with a closed endpoint
+    try testing.expectEqual(ThreadState.dead, s.threads[victim].state);
+    try testing.expect(endpoints[victim].closed);
+
+    // Bystander is unaffected (still ready, no endpoint interaction)
+    try testing.expectEqual(ThreadState.ready, s.threads[bystander].state);
+
+    s.reap(victim);
+    s.kill(bystander);
+    s.reap(bystander);
+}

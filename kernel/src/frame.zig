@@ -322,3 +322,28 @@ test "free rejects various misaligned addresses within pool" {
     // USER_POOL_END itself is not page-aligned
     try testing.expectError(error.InvalidFrame, fa.free(USER_POOL_END));
 }
+
+test "alloc reuses first word after freeing frames from second word era" {
+    // Regression: after allocating 65 frames (filling word 0 + 1 bit of word 1),
+    // freeing all 65 and reallocating must reuse word 0 slots first.
+    // Verifies CTZ scan always starts from word 0 (no stale hint index).
+    var fa = FrameAllocator.init();
+
+    // Allocate 65 frames: frames 0-63 land in bitmap word 0, frame 64 in word 1
+    var addrs: [65]u64 = undefined;
+    for (&addrs) |*a| a.* = try fa.alloc();
+    try testing.expectEqual(USER_POOL_START + 64 * FRAME_SIZE, addrs[64]);
+
+    // Free all 65 frames — word 0 and bit 0 of word 1 all zero again
+    for (addrs) |a| try fa.free(a);
+    try testing.expectEqual(TOTAL_FRAMES, fa.free_count);
+
+    // Reallocate 65 frames: must reuse word 0 (frames 0-63) before word 1
+    var addrs2: [65]u64 = undefined;
+    for (&addrs2) |*a| a.* = try fa.alloc();
+
+    // Frame 0 should come from word 0 (address = USER_POOL_START)
+    try testing.expectEqual(USER_POOL_START, addrs2[0]);
+    // Frame 64 should again come from word 1
+    try testing.expectEqual(USER_POOL_START + 64 * FRAME_SIZE, addrs2[64]);
+}
