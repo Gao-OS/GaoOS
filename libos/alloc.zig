@@ -45,7 +45,10 @@ pub const BumpAllocator = struct {
         const cap_idx: u32 = @intCast(cap_result);
 
         const phys_result = sys.framePhys(cap_idx);
-        if (phys_result < 0) return null;
+        if (phys_result < 0) {
+            _ = sys.frameFree(cap_idx);
+            return null;
+        }
 
         self.frames[self.frame_count] = cap_idx;
         self.frame_count += 1;
