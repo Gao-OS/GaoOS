@@ -716,6 +716,40 @@ test "Message.init with empty payload" {
     try testing.expectEqual(@as(usize, 0), msg.getPayload().len);
 }
 
+test "selective recv at ring buffer wrap boundary extracts last physical slot" {
+    var ep = Endpoint{};
+    // Fill the queue to wrap: insert 15 messages, then one more to wrap tail
+    for (0..15) |i| {
+        try ep.send(Message.init(@as(u64, @intCast(i)), ""), null, null);
+    }
+    // Consume 2 from head (head advances to 2)
+    _ = ep.recv(TAG_ANY);
+    _ = ep.recv(TAG_ANY);
+    // head=2, count=13. Send 3 more to fill to 16 and wrap tail past slot 15.
+    try ep.send(Message.init(100, ""), null, null);
+    try ep.send(Message.init(101, ""), null, null);
+    try ep.send(Message.init(102, ""), null, null);
+
+    // Now queue is full (16 msgs), head=2, tail=2 (wrapped).
+    // The message at physical slot 15 has tag=13 (was sent as the 14th message, 0-indexed).
+    // Selective recv for tag 13 should find it at physical index 15 and compact correctly.
+    const msg = ep.recv(13).?;
+    try testing.expectEqual(@as(u64, 13), msg.tag);
+    try testing.expectEqual(@as(u32, 15), ep.count);
+}
+
+test "recv after close with non-matching tag returns null" {
+    var ep = Endpoint{};
+    try ep.send(Message.init(42, "hello"), null, null);
+    ep.close();
+    // Pending message has tag 42; filtering for tag 99 should still return null
+    const result = ep.recv(99);
+    try testing.expect(result == null);
+    // But filtering for 42 or TAG_ANY should succeed
+    const msg = ep.recv(42).?;
+    try testing.expectEqual(@as(u64, 42), msg.tag);
+}
+
 test "Message.init with exactly MAX_PAYLOAD bytes" {
     const data = [_]u8{'x'} ** MAX_PAYLOAD;
     const msg = Message.init(1, &data);

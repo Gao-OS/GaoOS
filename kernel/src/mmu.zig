@@ -682,3 +682,90 @@ test "unmapPage returns false when L2 entry is invalid" {
     // VA 0x200000: l0_idx=0, l1_idx=0 (both valid), l2_idx=1 (not created) → false
     try testing.expect(!unmapPage(l0, 0x200000));
 }
+
+test "mapPage with non-zero indices at all four levels" {
+    // Use a larger pool since we need separate paths
+    const LargePool = struct {
+        tables: [16]?[]u8,
+        next: usize,
+
+        fn init() @This() {
+            return .{ .tables = .{null} ** 16, .next = 0 };
+        }
+
+        fn deinit(self: *@This()) void {
+            for (&self.tables) |*t| {
+                if (t.*) |slice| {
+                    std.heap.page_allocator.free(slice);
+                    t.* = null;
+                }
+            }
+        }
+
+        fn allocTable(ctx: *anyopaque) anyerror!PhysAddr {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (self.next >= self.tables.len) return error.OutOfMemory;
+            const mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
+            @memset(mem, 0);
+            self.tables[self.next] = mem;
+            self.next += 1;
+            return @intFromPtr(mem.ptr);
+        }
+
+        fn allocator(self: *@This()) Allocator {
+            return .{ .allocFn = &allocTable, .ptr = @ptrCast(self) };
+        }
+    };
+
+    var pool = LargePool.init();
+    defer pool.deinit();
+
+    const l0_mem = try std.heap.page_allocator.alloc(u8, PAGE_SIZE);
+    defer std.heap.page_allocator.free(l0_mem);
+    @memset(l0_mem, 0);
+    const l0: *PageTable = @ptrCast(@alignCast(l0_mem.ptr));
+
+    const flags = PageTableEntry{
+        .valid = 1,
+        .type_table = 0,
+        .attr_index = 2,
+        .ns = 1,
+        .ap = 1,
+        .sh = 2,
+        .af = 1,
+        .ng = 1,
+        .output_pa = 0,
+    };
+
+    // VA 0x0000_8040_0043_000 has:
+    // L0: (VA >> 39) & 0x1FF = 1
+    // L1: (VA >> 30) & 0x1FF = 1
+    // L2: (VA >> 21) & 0x1FF = 2
+    // L3: (VA >> 12) & 0x1FF = 3
+    const va: u64 = (1 << 39) | (1 << 30) | (2 << 21) | (3 << 12);
+    const pa: u64 = 0xDEAD_0000;
+
+    try mapPage(l0, va, pa, pool.allocator(), flags);
+
+    // Walk the hierarchy to verify
+    const l1: *PageTable = @ptrFromInt(@as(u64, l0[1].output_pa) << 12);
+    try testing.expectEqual(@as(u1, 1), l0[1].valid);
+    const l2: *PageTable = @ptrFromInt(@as(u64, l1[1].output_pa) << 12);
+    try testing.expectEqual(@as(u1, 1), l1[1].valid);
+    const l3: *PageTable = @ptrFromInt(@as(u64, l2[2].output_pa) << 12);
+    try testing.expectEqual(@as(u1, 1), l2[2].valid);
+
+    const entry = l3[3];
+    try testing.expectEqual(@as(u1, 1), entry.valid);
+    try testing.expectEqual(@as(u64, pa >> 12), @as(u64, entry.output_pa) & 0xFFFFF);
+    // Verify attribute propagation
+    try testing.expectEqual(@as(u3, 2), entry.attr_index);
+    try testing.expectEqual(@as(u1, 1), entry.ns);
+    try testing.expectEqual(@as(u2, 1), entry.ap);
+    try testing.expectEqual(@as(u2, 2), entry.sh);
+    try testing.expectEqual(@as(u1, 1), entry.ng);
+
+    // Unmap should succeed
+    try testing.expect(unmapPage(l0, va));
+    try testing.expectEqual(@as(u1, 0), l3[3].valid);
+}

@@ -794,6 +794,79 @@ test "spawn initializes supervisor_ep to THREAD_NONE" {
     try testing.expectEqual(THREAD_NONE, s.threads[id].blocked_ep);
 }
 
+test "reap then respawn at same slot yields clean state" {
+    var s = Scheduler{};
+    const id = try s.spawn();
+    const table = getCapTable(id).?;
+    const ep = getEndpoint(id).?;
+
+    // Give the thread a cap and a queued message
+    _ = try table.create(.frame, 0x400000, cap.Rights.ALL);
+    try ep.send(ipc.Message.init(42, "test"), null, null);
+
+    // Kill and reap
+    _ = s.schedule(); // make it running
+    s.kill(id);
+    try testing.expectEqual(ThreadState.dead, s.threads[id].state);
+    s.reap(id);
+    try testing.expectEqual(ThreadState.free, s.threads[id].state);
+
+    // Respawn at the same slot
+    const id2 = try s.spawn();
+    try testing.expectEqual(id, id2); // same slot reused
+
+    // Verify clean state: cap table empty, endpoint empty
+    const table2 = getCapTable(id2).?;
+    try testing.expect(table2.lookup(0) == null);
+    try testing.expectEqual(@as(u32, 0), table2.count);
+
+    const ep2 = getEndpoint(id2).?;
+    try testing.expect(ep2.isEmpty());
+    try testing.expect(!ep2.closed);
+    try testing.expect(ep2.recv(ipc.TAG_ANY) == null);
+}
+
+test "reap preserves generation counter for stale handle detection" {
+    var s = Scheduler{};
+    const id = try s.spawn();
+    const table = getCapTable(id).?;
+
+    // Create and delete a cap to bump generation
+    const idx = try table.create(.frame, 0x400000, cap.Rights.ALL);
+    table.delete(idx);
+    const gen_before_reap = table.slots[idx].generation;
+    try testing.expect(gen_before_reap > 0);
+
+    // Kill, reap
+    _ = s.schedule();
+    s.kill(id);
+    s.reap(id);
+
+    // Generation should be preserved (not reset to 0)
+    const table2 = getCapTable(id).?;
+    try testing.expectEqual(gen_before_reap, table2.slots[idx].generation);
+}
+
+test "kill wakes thread blocked on dying thread endpoint" {
+    var s = Scheduler{};
+    const victim_id = try s.spawn();
+    const blocker_id = try s.spawn();
+
+    // Make blocker blocked on victim's endpoint
+    _ = s.schedule(); // victim running
+    s.threads[blocker_id].state = .blocked;
+    s.threads[blocker_id].blocked_ep = victim_id;
+
+    // Kill victim — should wake blocker
+    s.kill(victim_id);
+    try testing.expectEqual(ThreadState.ready, s.threads[blocker_id].state);
+    try testing.expectEqual(THREAD_NONE, s.threads[blocker_id].blocked_ep);
+
+    // Victim's endpoint should be closed
+    const ep = getEndpoint(victim_id).?;
+    try testing.expect(ep.closed);
+}
+
 test "getCapTable and getEndpoint return null at MAX_THREADS boundary" {
     try testing.expect(getCapTable(MAX_THREADS) == null);
     try testing.expect(getEndpoint(MAX_THREADS) == null);

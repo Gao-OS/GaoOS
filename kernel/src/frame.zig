@@ -229,6 +229,39 @@ test "isAllocated returns false for address past pool end" {
     try testing.expect(!fa.isAllocated(USER_POOL_START - FRAME_SIZE));
 }
 
+test "alloc and free last frame in pool" {
+    var fa = FrameAllocator.init();
+    // Exhaust all frames
+    var last_addr: u64 = 0;
+    for (0..TOTAL_FRAMES) |_| {
+        last_addr = try fa.alloc();
+    }
+    // Last allocated frame should be at the highest valid address
+    const expected_last = USER_POOL_START + @as(u64, TOTAL_FRAMES - 1) * FRAME_SIZE;
+    try testing.expectEqual(expected_last, last_addr);
+    try testing.expect(fa.isAllocated(last_addr));
+
+    // Free the last frame and re-allocate it
+    try fa.free(last_addr);
+    try testing.expect(!fa.isAllocated(last_addr));
+    const realloc = try fa.alloc();
+    try testing.expectEqual(last_addr, realloc);
+}
+
+test "multiple alloc/free cycles on same frame" {
+    var fa = FrameAllocator.init();
+    const addr = try fa.alloc();
+    // Do 100 free-alloc cycles on the same frame
+    for (0..100) |_| {
+        try fa.free(addr);
+        try testing.expect(!fa.isAllocated(addr));
+        const got = try fa.alloc();
+        try testing.expectEqual(addr, got);
+        try testing.expect(fa.isAllocated(addr));
+    }
+    try testing.expectEqual(TOTAL_FRAMES - 1, fa.free_count);
+}
+
 test "alloc after filling first bitmap word allocates from second word" {
     var fa = FrameAllocator.init();
     // Allocate first 64 frames — fills the first u64 word in the bitmap
