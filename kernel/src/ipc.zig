@@ -696,6 +696,14 @@ test "TAG_ANY wildcard receives message with tag zero" {
     try testing.expect(ep.isEmpty());
 }
 
+test "recv with non-zero tag filter on empty queue returns null" {
+    var ep = Endpoint{};
+    // TAG_ANY (0) is covered by "recv returns null on empty endpoint" test;
+    // verify non-zero filters also return null on empty queue
+    try testing.expect(ep.recv(99) == null);
+    try testing.expect(ep.recv(0xFFFF_FFFF_FFFF_FFFF) == null);
+}
+
 test "Message.init with empty payload" {
     const msg = Message.init(42, "");
     try testing.expectEqual(@as(u64, 42), msg.tag);

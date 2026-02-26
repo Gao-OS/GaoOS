@@ -760,3 +760,44 @@ test "schedule wraps from last slot to first" {
     try testing.expectEqual(t0, next.id);
     try testing.expectEqual(ThreadState.running, next.state);
 }
+
+test "blockCurrent on already-blocked thread is a no-op" {
+    var s = Scheduler{};
+    const id = try s.spawn();
+    _ = s.schedule(); // id is .running, has_current = true
+    s.threads[id].blocked_ep = 5;
+    s.blockCurrent(); // .running → .blocked
+    try testing.expectEqual(ThreadState.blocked, s.threads[id].state);
+    // Second call: has_current=true but current thread is .blocked, not .running
+    s.blockCurrent();
+    try testing.expectEqual(ThreadState.blocked, s.threads[id].state);
+    try testing.expectEqual(@as(ThreadId, 5), s.threads[id].blocked_ep);
+}
+
+test "unblock on running thread does not change state" {
+    var s = Scheduler{};
+    const id = try s.spawn();
+    _ = s.schedule(); // id is .running
+    try testing.expectEqual(ThreadState.running, s.threads[id].state);
+    // unblock only transitions .blocked → .ready; .running must be left alone
+    s.unblock(id);
+    try testing.expectEqual(ThreadState.running, s.threads[id].state);
+}
+
+test "spawn initializes supervisor_ep to THREAD_NONE" {
+    var s = Scheduler{};
+    const id = try s.spawn();
+    // Thread must start with no supervisor and no blocked endpoint
+    try testing.expectEqual(@as(u32, 0xFFFFFFFF), s.threads[id].supervisor_ep);
+    try testing.expectEqual(THREAD_NONE, s.threads[id].blocked_ep);
+}
+
+test "getCapTable and getEndpoint return null at MAX_THREADS boundary" {
+    try testing.expect(getCapTable(MAX_THREADS) == null);
+    try testing.expect(getEndpoint(MAX_THREADS) == null);
+    try testing.expect(getCapTable(0xFFFFFFFF) == null);
+    try testing.expect(getEndpoint(0xFFFFFFFF) == null);
+    // Last valid index returns non-null
+    try testing.expect(getCapTable(MAX_THREADS - 1) != null);
+    try testing.expect(getEndpoint(MAX_THREADS - 1) != null);
+}

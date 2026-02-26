@@ -483,6 +483,16 @@ test "Rights.intersect with NONE yields NONE" {
     try testing.expect(Rights.NONE.intersect(Rights.NONE).eql(Rights.NONE));
 }
 
+test "check with NONE required rights always succeeds for any valid cap" {
+    var table = CapabilityTable{};
+    const idx = try table.create(.frame, 0x1000, Rights.READ_ONLY);
+    // NONE is a subset of every rights set — check always passes for a valid cap
+    try testing.expect(table.check(idx, Rights.NONE));
+    // A cap derived with NONE rights also passes check for NONE required
+    const none_cap = try table.derive(idx, Rights.NONE);
+    try testing.expect(table.check(none_cap, Rights.NONE));
+}
+
 test "derive error precedence: RightsEscalation wins over TableFull" {
     var table = CapabilityTable{};
     // Create a READ_ONLY parent cap at slot 0, fill remaining slots

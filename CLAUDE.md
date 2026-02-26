@@ -160,7 +160,7 @@ Phase 1 (minimal kernel) and Phase 2 (LibOS prototype) are complete. Phase 3 (mu
 
 ### Test Summary
 
-- 255 host unit tests (cap: 28, ipc: 30, sched: 33, syscall: 120, mmu: 18, frame: 13, fault: 13)
+- 261 host unit tests (cap: 29, ipc: 31, sched: 37, syscall: 120, mmu: 18, frame: 13, fault: 13)
 - QEMU integration test (37 output markers validated)
 - CI pipeline: unit tests + cross-compile + QEMU integration
 
