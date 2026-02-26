@@ -96,12 +96,17 @@ pub fn resetCapTable(id: ThreadId) void {
 }
 
 /// Reset a thread's endpoint (for reap/reuse).
+/// Zeroes the message queue to prevent stale data (payload bytes,
+/// cap indices) from leaking to a future thread incarnation.
 pub fn resetEndpoint(id: ThreadId) void {
     if (id >= MAX_THREADS) return;
     endpoints[id].head = 0;
     endpoints[id].tail = 0;
     endpoints[id].count = 0;
     endpoints[id].closed = false;
+    for (&endpoints[id].queue) |*msg| {
+        msg.* = ipc.Message{};
+    }
 }
 
 /// The scheduler: thread table + round-robin state.
