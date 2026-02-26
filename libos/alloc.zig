@@ -5,6 +5,8 @@
 
 const sys = @import("syscall.zig");
 
+/// Max frames tracked by the bump allocator (1MB of user heap).
+/// Kept small to fit in the allocator struct on the user stack.
 pub const MAX_FRAMES = 256;
 
 pub const BumpAllocator = struct {

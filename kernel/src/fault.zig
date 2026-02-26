@@ -59,6 +59,7 @@ pub fn notifyEndpoint(
     };
 
     var msg = ipc.Message{ .tag = FAULT_TAG };
+    // Byte-by-byte copy to avoid alignment assumptions on the packed IPC payload
     const src: [*]const u8 = @ptrCast(&fault_data);
     for (0..@sizeOf(FaultMsg)) |i| {
         msg.payload[i] = src[i];
