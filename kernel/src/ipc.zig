@@ -956,3 +956,29 @@ test "Message.init with 1-byte and MAX_PAYLOAD-1 byte payloads" {
     try testing.expectEqual(@as(u32, MAX_PAYLOAD - 1), m2.payload_len);
     try testing.expectEqual(@as(usize, MAX_PAYLOAD - 1), m2.getPayload().len);
 }
+
+test "send with cap_count > 0 but all caps CAP_NULL is treated as no-op cap transfer" {
+    // Attaching CAP_NULL explicitly increments cap_count but carries no real cap.
+    // The send path (Phase 1 + Phase 2) must skip CAP_NULL slots entirely,
+    // completing without error and without touching the receiver table.
+    var ep = Endpoint{};
+    var sender = cap.CapabilityTable{};
+    var receiver = cap.CapabilityTable{};
+
+    var msg = Message.init(55, "no real caps");
+    try msg.attachCap(cap.CAP_NULL);
+    try msg.attachCap(cap.CAP_NULL);
+    try testing.expectEqual(@as(u32, 2), msg.cap_count);
+
+    // Send should succeed — all-CAP_NULL cap list is valid
+    try ep.send(msg, &sender, &receiver);
+
+    // Receiver table untouched
+    try testing.expectEqual(@as(u32, 0), receiver.count);
+
+    const received = ep.recv(TAG_ANY).?;
+    try testing.expectEqual(@as(u64, 55), received.tag);
+    // Both cap slots remain CAP_NULL in the received message
+    try testing.expectEqual(cap.CAP_NULL, received.caps[0]);
+    try testing.expectEqual(cap.CAP_NULL, received.caps[1]);
+}
