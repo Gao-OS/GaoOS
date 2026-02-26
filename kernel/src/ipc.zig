@@ -761,3 +761,104 @@ test "Message.init with exactly MAX_PAYLOAD bytes" {
     try testing.expectEqual(@as(u8, 'x'), msg.getPayload()[0]);
     try testing.expectEqual(@as(u8, 'x'), msg.getPayload()[MAX_PAYLOAD - 1]);
 }
+
+test "cap transfer preserves various rights combinations" {
+    // Verify that transferred caps retain their original rights
+    const right_sets = [_]cap.Rights{
+        cap.Rights.READ_ONLY,
+        cap.Rights.READ_WRITE,
+        cap.Rights.ALL,
+        cap.Rights{ .write = true },
+        cap.Rights{ .grant = true },
+    };
+
+    for (right_sets) |rights| {
+        var ep = Endpoint{};
+        var sender = cap.CapabilityTable{};
+        var receiver = cap.CapabilityTable{};
+
+        const src = try sender.create(.frame, 0xF00D, rights);
+        var msg = Message.init(1, "");
+        try msg.attachCap(src);
+        try ep.send(msg, &sender, &receiver);
+
+        const received = ep.recv(TAG_ANY).?;
+        const transferred = receiver.lookup(received.caps[0]).?;
+        try testing.expect(transferred.rights.eql(rights));
+        try testing.expectEqual(@as(usize, 0xF00D), transferred.object);
+    }
+}
+
+test "selective recv from head position returns immediately" {
+    var ep = Endpoint{};
+    try ep.send(Message.init(42, "head"), null, null);
+    try ep.send(Message.init(99, "tail"), null, null);
+
+    // Tag 42 is at head (scan=0) — no compaction needed
+    const m = ep.recv(42).?;
+    try testing.expectEqual(@as(u64, 42), m.tag);
+    try testing.expectEqualSlices(u8, "head", m.getPayload());
+    try testing.expectEqual(@as(u32, 1), ep.count);
+
+    // Remaining message intact
+    const r = ep.recv(TAG_ANY).?;
+    try testing.expectEqual(@as(u64, 99), r.tag);
+}
+
+test "selective recv from tail position shifts full prefix" {
+    var ep = Endpoint{};
+    try ep.send(Message.init(10, "a"), null, null);
+    try ep.send(Message.init(20, "b"), null, null);
+    try ep.send(Message.init(30, "c"), null, null);
+    try ep.send(Message.init(40, "d"), null, null);
+    try ep.send(Message.init(50, "target"), null, null);
+
+    // Tag 50 is at position 4 (last) — full prefix [10,20,30,40] shifts forward
+    const m = ep.recv(50).?;
+    try testing.expectEqual(@as(u64, 50), m.tag);
+    try testing.expectEqualSlices(u8, "target", m.getPayload());
+    try testing.expectEqual(@as(u32, 4), ep.count);
+
+    // Remaining messages must be in original FIFO order
+    try testing.expectEqual(@as(u64, 10), ep.recv(TAG_ANY).?.tag);
+    try testing.expectEqual(@as(u64, 20), ep.recv(TAG_ANY).?.tag);
+    try testing.expectEqual(@as(u64, 30), ep.recv(TAG_ANY).?.tag);
+    try testing.expectEqual(@as(u64, 40), ep.recv(TAG_ANY).?.tag);
+    try testing.expect(ep.recv(TAG_ANY) == null);
+}
+
+test "send with asymmetric table pointers skips transfer" {
+    var ep = Endpoint{};
+    var sender = cap.CapabilityTable{};
+    var receiver = cap.CapabilityTable{};
+
+    const c0 = try sender.create(.frame, 0x1000, cap.Rights.ALL);
+    var msg = Message.init(1, "asym");
+    try msg.attachCap(c0);
+
+    // sender_table only, receiver null — transfer skipped
+    try ep.send(msg, &sender, null);
+    // Cap still in sender (not transferred)
+    try testing.expect(sender.lookup(c0) != null);
+    try testing.expectEqual(@as(u32, 0), receiver.count);
+
+    _ = ep.recv(TAG_ANY); // drain
+
+    // receiver_table only, sender null — transfer skipped
+    try ep.send(msg, null, &receiver);
+    try testing.expect(sender.lookup(c0) != null);
+    try testing.expectEqual(@as(u32, 0), receiver.count);
+}
+
+test "Message.init with 1-byte and MAX_PAYLOAD-1 byte payloads" {
+    // 1-byte payload
+    const m1 = Message.init(1, "x");
+    try testing.expectEqual(@as(u32, 1), m1.payload_len);
+    try testing.expectEqual(@as(u8, 'x'), m1.getPayload()[0]);
+
+    // MAX_PAYLOAD - 1 byte payload
+    const data = [_]u8{'y'} ** (MAX_PAYLOAD - 1);
+    const m2 = Message.init(2, &data);
+    try testing.expectEqual(@as(u32, MAX_PAYLOAD - 1), m2.payload_len);
+    try testing.expectEqual(@as(usize, MAX_PAYLOAD - 1), m2.getPayload().len);
+}

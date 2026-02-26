@@ -541,3 +541,98 @@ test "derive error precedence: RightsEscalation wins over TableFull" {
     // Table is full AND rights would escalate → RightsEscalation is checked first
     try testing.expectError(error.RightsEscalation, table.derive(parent, Rights.READ_WRITE));
 }
+
+test "create with object=0 is valid and distinct from INVALID" {
+    var table = CapabilityTable{};
+    // object=0 is a legitimate value — must not be confused with Capability.INVALID
+    const idx = try table.create(.frame, 0, Rights.ALL);
+    const c = table.lookup(idx).?;
+    try testing.expectEqual(@as(usize, 0), c.object);
+    try testing.expectEqual(CapabilityType.frame, c.cap_type);
+    try testing.expect(c.rights.read);
+    try testing.expectEqual(@as(u32, 1), table.count);
+}
+
+test "create and lookup with aspace and irq cap types" {
+    var table = CapabilityTable{};
+    const as_idx = try table.create(.aspace, 0x1000, Rights.READ_WRITE);
+    const irq_idx = try table.create(.irq, 42, Rights.READ_ONLY);
+
+    const as_cap = table.lookup(as_idx).?;
+    try testing.expectEqual(CapabilityType.aspace, as_cap.cap_type);
+    try testing.expectEqual(@as(usize, 0x1000), as_cap.object);
+
+    const irq_cap = table.lookup(irq_idx).?;
+    try testing.expectEqual(CapabilityType.irq, irq_cap.cap_type);
+    try testing.expectEqual(@as(usize, 42), irq_cap.object);
+
+    // Derive from aspace cap preserves type
+    const derived = try table.derive(as_idx, Rights.READ_ONLY);
+    const d = table.lookup(derived).?;
+    try testing.expectEqual(CapabilityType.aspace, d.cap_type);
+    try testing.expect(d.rights.read and !d.rights.write);
+}
+
+test "Rights.intersect comprehensive combinations" {
+    // intersect(READ_WRITE, READ_ONLY) → READ_ONLY
+    const rw_ro = Rights.READ_WRITE.intersect(Rights.READ_ONLY);
+    try testing.expect(rw_ro.eql(Rights.READ_ONLY));
+
+    // intersect(ALL, READ_WRITE) → READ_WRITE
+    const all_rw = Rights.ALL.intersect(Rights.READ_WRITE);
+    try testing.expect(all_rw.eql(Rights.READ_WRITE));
+
+    // intersect(grant-only, revoke-only) → NONE
+    const g = Rights{ .grant = true };
+    const r = Rights{ .revoke = true };
+    try testing.expect(g.intersect(r).eql(Rights.NONE));
+
+    // intersect is commutative
+    try testing.expect(Rights.READ_ONLY.intersect(Rights.ALL).eql(Rights.ALL.intersect(Rights.READ_ONLY)));
+
+    // intersect with self is identity
+    try testing.expect(Rights.ALL.intersect(Rights.ALL).eql(Rights.ALL));
+    try testing.expect(Rights.READ_WRITE.intersect(Rights.READ_WRITE).eql(Rights.READ_WRITE));
+}
+
+test "fill all 256 slots and verify count matches linear scan" {
+    var table = CapabilityTable{};
+    for (0..MAX_CAPS) |i| {
+        _ = try table.create(.frame, i, Rights.ALL);
+    }
+    try testing.expectEqual(@as(u32, MAX_CAPS), table.count);
+
+    // Verify every slot is valid via lookup
+    var valid_count: u32 = 0;
+    for (0..MAX_CAPS) |i| {
+        if (table.lookup(@intCast(i)) != null) valid_count += 1;
+    }
+    try testing.expectEqual(@as(u32, MAX_CAPS), valid_count);
+
+    // Table is full
+    try testing.expectError(error.TableFull, table.create(.frame, 0, Rights.ALL));
+
+    // Delete slot 127 (middle), re-create, verify count
+    table.delete(127);
+    try testing.expectEqual(@as(u32, MAX_CAPS - 1), table.count);
+    const reused = try table.create(.frame, 0xBEEF, Rights.READ_ONLY);
+    try testing.expectEqual(@as(u32, 127), reused);
+    try testing.expectEqual(@as(u32, MAX_CAPS), table.count);
+}
+
+test "derive write-only cap" {
+    var table = CapabilityTable{};
+    const parent = try table.create(.frame, 0x1000, Rights.ALL);
+    const wo = try table.derive(parent, Rights{ .write = true });
+    const c = table.lookup(wo).?;
+    try testing.expect(!c.rights.read);
+    try testing.expect(c.rights.write);
+    try testing.expect(!c.rights.grant);
+    try testing.expect(!c.rights.revoke);
+
+    // Cannot escalate from write-only to read
+    try testing.expectError(error.RightsEscalation, table.derive(wo, Rights.READ_ONLY));
+    // Can further attenuate to NONE
+    const none = try table.derive(wo, Rights.NONE);
+    try testing.expect(table.lookup(none).?.rights.eql(Rights.NONE));
+}

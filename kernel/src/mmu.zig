@@ -683,6 +683,59 @@ test "unmapPage returns false when L2 entry is invalid" {
     try testing.expect(!unmapPage(l0, 0x200000));
 }
 
+test "initFrameAllocator with unaligned total_bytes rounds bitmap up" {
+    // 5000 bytes → total_frames = 5000/4096 = 1 → bitmap_size = 1 word (64 bits).
+    // Design note: allocator tracks bitmap, not total_frames, so all 64 bits
+    // in the word are allocatable. Caller must ensure pool size matches bitmap.
+    var fa = try initFrameAllocator(testing.allocator, 5000, 0);
+    defer testing.allocator.free(fa.bitmap);
+
+    const a0 = try fa.allocFrame();
+    try testing.expectEqual(@as(u64, 0), a0);
+    try testing.expectEqual(@as(usize, 1), fa.used);
+    // Bitmap has room for 64 frames even though only 1 physical frame exists
+    const a1 = try fa.allocFrame();
+    try testing.expectEqual(@as(u64, PAGE_SIZE), a1);
+    try testing.expectEqual(@as(usize, 1), fa.bitmap.len); // exactly 1 bitmap word
+}
+
+test "frame allocator across multiple bitmap words" {
+    // 128 frames = 2 bitmap words. Verify allocation spans words correctly.
+    var fa = try initFrameAllocator(testing.allocator, 128 * PAGE_SIZE, 0);
+    defer testing.allocator.free(fa.bitmap);
+
+    // Allocate all 128 frames
+    for (0..128) |_| _ = try fa.allocFrame();
+    try testing.expectEqual(@as(usize, 128), fa.used);
+    try testing.expectError(error.OutOfMemory, fa.allocFrame());
+
+    // Free frame at word boundary (frame 63 = last bit of word 0)
+    fa.freeFrame(63 * PAGE_SIZE);
+    // Free frame at next word start (frame 64 = first bit of word 1)
+    fa.freeFrame(64 * PAGE_SIZE);
+    try testing.expectEqual(@as(usize, 126), fa.used);
+
+    // Re-allocate — should get frame 63 first (lower index)
+    const r0 = try fa.allocFrame();
+    try testing.expectEqual(@as(u64, 63 * PAGE_SIZE), r0);
+    const r1 = try fa.allocFrame();
+    try testing.expectEqual(@as(u64, 64 * PAGE_SIZE), r1);
+}
+
+test "freeFrame with misaligned address is silently handled" {
+    var fa = try initFrameAllocator(testing.allocator, 64 * PAGE_SIZE, 0);
+    defer testing.allocator.free(fa.bitmap);
+
+    const a0 = try fa.allocFrame();
+    _ = a0;
+    try testing.expectEqual(@as(usize, 1), fa.used);
+
+    // Misaligned addresses — freeFrame uses integer division, so
+    // paddr / PAGE_SIZE gives frame index 0 for addresses < PAGE_SIZE
+    fa.freeFrame(1); // maps to frame 0 via integer division
+    try testing.expectEqual(@as(usize, 0), fa.used);
+}
+
 test "mapPage with non-zero indices at all four levels" {
     // Use a larger pool since we need separate paths
     const LargePool = struct {
