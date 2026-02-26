@@ -2101,6 +2101,46 @@ test "sysCapRead returns irq and aspace cap types" {
     );
 }
 
+test "dispatch SYS_IPC_RECV_CAP_BLOCK does not clobber frame writes" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    sched.global.threads[tid].state = .running;
+    sched.global.current = tid;
+    sched.global.has_current = true;
+    var frame_buf = [_]u64{0} ** 34;
+    frame_buf[6] = SYS_IPC_RECV_CAP_BLOCK;
+    frame_buf[31] = @as(u64, ep_cap);
+    frame_buf[32] = 0; // buf_ptr
+    frame_buf[0] = 0; // tag_filter
+    dispatch(tid, &frame_buf);
+    // Empty endpoint: sysIpcRecvCapBlock writes E_AGAIN and blocks thread
+    try testing.expectEqual(E_AGAIN, frame_buf[31]);
+    try testing.expectEqual(@as(u64, cap.CAP_NULL), frame_buf[32]);
+    try testing.expectEqual(sched.ThreadState.blocked, sched.global.threads[tid].state);
+}
+
+test "sysIpcRecvCap with tag filter receives only matching message" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    // Send two messages with different tags
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 0x1111));
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 0x2222));
+    // RecvCap with tag filter 0x2222 skips first message and returns second
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvCap(tid, &frame_buf, ep_cap, 0, 0x2222);
+    try testing.expectEqual(@as(u64, 0), result); // success: 0 bytes received
+    // Second message (tag=0x2222) is returned, first (tag=0x1111) is left queued
+    // sysIpcRecv uses frame[31]=payload_len, frame[32]=tag via direct write
+    // But sysIpcRecvCap returns cap_idx in frame[32] not tag... verify E_AGAIN path
+    // Actually: sysIpcRecvCap doesn't write tag to frame[32] (that's sysIpcRecv's job)
+    // Verify the non-matching message is still in the queue
+    const next = sysIpcRecv(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(@as(u64, 0), next);
+    try testing.expectEqual(@as(u64, 0x1111), frame_buf[32]); // first message still there
+}
+
 test "sysIpcSendCap returns E_FULL when receiver cap table is full" {
     const tid = testSetup();
     defer testTeardown();
