@@ -390,6 +390,116 @@ test "notify silently drops when supervisor endpoint queue is full" {
     sched.global.reap(sup_id);
 }
 
+test "notify with thread_id = MAX_THREADS - 1 delivers to supervisor" {
+    sched.global = .{};
+    for (0..sched.MAX_THREADS) |i| {
+        sched.resetCapTable(@intCast(i));
+        sched.resetEndpoint(@intCast(i));
+    }
+    const sup_id = try sched.global.spawn();
+    _ = sched.global.schedule();
+
+    // Spawn threads until we fill to MAX_THREADS - 1
+    var last_id: sched.ThreadId = undefined;
+    while (true) {
+        last_id = sched.global.spawn() catch break;
+    }
+    // last_id is MAX_THREADS - 1 (slot 63)
+    try testing.expectEqual(@as(sched.ThreadId, sched.MAX_THREADS - 1), last_id);
+
+    // Set supervisor
+    sched.global.threads[last_id].supervisor_ep = sup_id;
+
+    // Notify should deliver
+    notify(last_id, .exit, 0xDEAD, 0);
+    const sup_ep = sched.getEndpoint(sup_id).?;
+    try testing.expectEqual(@as(u32, 1), sup_ep.count);
+
+    const msg = sup_ep.recv(FAULT_TAG).?;
+    try testing.expectEqual(FAULT_TAG, msg.tag);
+
+    // Cleanup
+    for (0..sched.MAX_THREADS) |i| {
+        sched.global.kill(@intCast(i));
+        sched.global.reap(@intCast(i));
+    }
+}
+
+test "notify fills queue to boundary then drops silently" {
+    sched.global = .{};
+    for (0..sched.MAX_THREADS) |i| {
+        sched.resetCapTable(@intCast(i));
+        sched.resetEndpoint(@intCast(i));
+    }
+    const sup_id = try sched.global.spawn();
+    _ = sched.global.schedule();
+    const child_id = try sched.global.spawn();
+    sched.global.threads[child_id].supervisor_ep = sup_id;
+
+    const sup_ep = sched.getEndpoint(sup_id).?;
+
+    // Fill queue to exactly QUEUE_SIZE - 1
+    for (0..ipc.QUEUE_SIZE - 1) |_| {
+        try sup_ep.send(ipc.Message.init(1, "fill"), null, null);
+    }
+    try testing.expectEqual(@as(u32, ipc.QUEUE_SIZE - 1), sup_ep.count);
+
+    // This notification should fit (last slot)
+    notify(child_id, .exit, 0, 0);
+    try testing.expectEqual(@as(u32, ipc.QUEUE_SIZE), sup_ep.count);
+
+    // This one should be dropped (queue full)
+    notify(child_id, .killed, 0, 0);
+    try testing.expectEqual(@as(u32, ipc.QUEUE_SIZE), sup_ep.count); // unchanged
+
+    sched.global.kill(child_id);
+    sched.global.reap(child_id);
+    sched.global.kill(sup_id);
+    sched.global.reap(sup_id);
+}
+
+test "FaultMsg with extreme field values round-trips correctly" {
+    var ep = ipc.Endpoint{};
+    notifyEndpoint(&ep, .exception, 0, 0, 0); // all zeros
+    const msg0 = ep.recv(FAULT_TAG).?;
+    const src0: [*]const u8 = @ptrCast(&msg0.payload);
+    const parsed0: *const FaultMsg = @ptrCast(@alignCast(src0));
+    try testing.expectEqual(@as(u8, @intFromEnum(Reason.exception)), parsed0.reason);
+    try testing.expectEqual(@as(u32, 0), parsed0.thread_id);
+    try testing.expectEqual(@as(u64, 0), parsed0.fault_addr);
+    try testing.expectEqual(@as(u64, 0), parsed0.esr);
+
+    // Max values
+    notifyEndpoint(&ep, .cap_violation, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF);
+    const msg1 = ep.recv(FAULT_TAG).?;
+    const src1: [*]const u8 = @ptrCast(&msg1.payload);
+    const parsed1: *const FaultMsg = @ptrCast(@alignCast(src1));
+    try testing.expectEqual(@as(u8, @intFromEnum(Reason.cap_violation)), parsed1.reason);
+    try testing.expectEqual(@as(u32, 0xFFFFFFFF), parsed1.thread_id);
+    try testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), parsed1.fault_addr);
+    try testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), parsed1.esr);
+}
+
+test "notify with supervisor_ep = MAX_THREADS is silent (out of range)" {
+    sched.global = .{};
+    for (0..sched.MAX_THREADS) |i| {
+        sched.resetCapTable(@intCast(i));
+        sched.resetEndpoint(@intCast(i));
+    }
+    const tid = try sched.global.spawn();
+    _ = sched.global.schedule();
+
+    // Set supervisor_ep to out-of-range value
+    sched.global.threads[tid].supervisor_ep = sched.MAX_THREADS;
+
+    // Notify should silently return (getEndpoint returns null)
+    notify(tid, .exit, 0, 0);
+
+    // No crash, no message anywhere
+    sched.global.kill(tid);
+    sched.global.reap(tid);
+}
+
 test "multiple fault notifications from different children" {
     sched.global = .{};
     for (0..sched.MAX_THREADS) |i| {

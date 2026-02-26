@@ -2955,6 +2955,57 @@ test "sysIpcRecvCapBlock returns E_CLOSED on endpoint closed by thread kill" {
     try testing.expectEqual(E_CLOSED, result);
 }
 
+test "sysCapDerive with zero rights succeeds" {
+    const tid = testSetup();
+    defer testTeardown();
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    // Derive with no rights at all — minimum viable cap
+    const zero_cap: cap.CapIndex = @intCast(sysCapDerive(tid, frame_cap, 0));
+    try testing.expect(zero_cap < 256);
+    // Cap exists but has no rights — can't read, write, or grant
+    try testing.expectEqual(E_BADCAP, sysCapRead(tid, zero_cap));
+    try testing.expectEqual(E_BADCAP, sysFramePhys(tid, zero_cap));
+}
+
+test "capObjectToId boundary: MAX_THREADS - 1 valid, MAX_THREADS null" {
+    try testing.expect(capObjectToId(sched.MAX_THREADS - 1) != null);
+    try testing.expectEqual(@as(sched.ThreadId, sched.MAX_THREADS - 1), capObjectToId(sched.MAX_THREADS - 1).?);
+    try testing.expect(capObjectToId(sched.MAX_THREADS) == null);
+    try testing.expect(capObjectToId(0xFFFFFFFF) == null);
+    try testing.expect(capObjectToId(0) != null);
+    try testing.expectEqual(@as(sched.ThreadId, 0), capObjectToId(0).?);
+}
+
+test "sysThreadCreate rejects entry_pc at USER_MEM_END boundary" {
+    const tid = testSetup();
+    defer testTeardown();
+    // entry_pc = USER_MEM_END - 2: isValidUserRange(entry_pc, 4) needs 4 bytes,
+    // last byte at USER_MEM_END + 1 → overflow past range
+    try testing.expectEqual(E_BADARG, sysThreadCreate(tid, USER_MEM_END - 2, 0x300000));
+    // entry_pc = USER_MEM_END - 3: exactly fits (last byte at USER_MEM_END)
+    // but USER_MEM_END - 3 = 0x3FFFFFC which is 4-byte aligned
+    try testing.expect(sysThreadCreate(tid, USER_MEM_END - 3, 0x300000) < 256);
+}
+
+test "sysFrameFree returns E_BADCAP for non-frame cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    // Endpoint cap is not a frame — sysFrameFree must reject
+    try testing.expectEqual(E_BADCAP, sysFrameFree(tid, ep_cap));
+}
+
+test "sysFrameFree returns E_BADCAP for read-only frame cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    // Derive read-only (no write right)
+    const ro: u8 = @bitCast(cap.Rights{ .read = true });
+    const ro_cap: cap.CapIndex = @intCast(sysCapDerive(tid, frame_cap, ro));
+    // Freeing requires write right
+    try testing.expectEqual(E_BADCAP, sysFrameFree(tid, ro_cap));
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');

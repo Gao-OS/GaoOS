@@ -961,6 +961,121 @@ test "kill wakes blocked waiter then waiter retries and sees closed endpoint" {
     s.reap(waiter);
 }
 
+test "zeroContext zeros all callee-saved registers" {
+    var s = Scheduler{};
+    const id = try s.spawn();
+    // Set all context fields to non-zero
+    s.threads[id].context.x19 = 0xDEAD;
+    s.threads[id].context.x20 = 0xBEEF;
+    s.threads[id].context.x21 = 1;
+    s.threads[id].context.x22 = 2;
+    s.threads[id].context.x23 = 3;
+    s.threads[id].context.x24 = 4;
+    s.threads[id].context.x25 = 5;
+    s.threads[id].context.x26 = 6;
+    s.threads[id].context.x27 = 7;
+    s.threads[id].context.x28 = 8;
+    s.threads[id].context.x29 = 9;
+    s.threads[id].context.x30 = 10;
+    s.threads[id].context.sp = 11;
+    s.threads[id].context.sp_el0 = 12;
+
+    zeroContext(&s.threads[id].context);
+
+    try testing.expectEqual(@as(u64, 0), s.threads[id].context.x19);
+    try testing.expectEqual(@as(u64, 0), s.threads[id].context.x20);
+    try testing.expectEqual(@as(u64, 0), s.threads[id].context.x21);
+    try testing.expectEqual(@as(u64, 0), s.threads[id].context.x22);
+    try testing.expectEqual(@as(u64, 0), s.threads[id].context.x23);
+    try testing.expectEqual(@as(u64, 0), s.threads[id].context.x24);
+    try testing.expectEqual(@as(u64, 0), s.threads[id].context.x25);
+    try testing.expectEqual(@as(u64, 0), s.threads[id].context.x26);
+    try testing.expectEqual(@as(u64, 0), s.threads[id].context.x27);
+    try testing.expectEqual(@as(u64, 0), s.threads[id].context.x28);
+    try testing.expectEqual(@as(u64, 0), s.threads[id].context.x29);
+    try testing.expectEqual(@as(u64, 0), s.threads[id].context.x30);
+    try testing.expectEqual(@as(u64, 0), s.threads[id].context.sp);
+    try testing.expectEqual(@as(u64, 0), s.threads[id].context.sp_el0);
+}
+
+test "blockCurrent then kill transitions blocked to dead" {
+    var s = Scheduler{};
+    const id = try s.spawn();
+    _ = s.schedule(); // running
+    s.threads[id].blocked_ep = 5;
+    s.blockCurrent(); // blocked
+    try testing.expectEqual(ThreadState.blocked, s.threads[id].state);
+
+    s.kill(id);
+    try testing.expectEqual(ThreadState.dead, s.threads[id].state);
+    try testing.expectEqual(THREAD_NONE, s.threads[id].blocked_ep);
+}
+
+test "schedule with fragmented states skips dead and blocked threads" {
+    var s = Scheduler{};
+    _ = try s.spawn(); // slot 0: ready
+    const t1 = try s.spawn(); // slot 1: will be dead
+    const t2 = try s.spawn(); // slot 2: will be blocked
+    const t3 = try s.spawn(); // slot 3: ready
+
+    s.kill(t1); // dead
+    _ = s.schedule(); // slot 0 running
+    s.threads[t2].blocked_ep = 9;
+    s.threads[t2].state = .blocked;
+
+    // From slot 0, next should skip t1 (dead) and t2 (blocked), finding t3
+    const next = s.schedule().?;
+    try testing.expectEqual(t3, next.id);
+    try testing.expectEqual(ThreadState.running, next.state);
+}
+
+test "resetEndpoint on full 16-message queue clears all" {
+    const id = 0;
+    resetEndpoint(id);
+    const ep = getEndpoint(id).?;
+    for (0..ipc.QUEUE_SIZE) |i| {
+        try ep.send(ipc.Message.init(@intCast(i), "msg"), null, null);
+    }
+    try testing.expect(ep.isFull());
+    try testing.expectEqual(@as(u32, ipc.QUEUE_SIZE), ep.count);
+
+    resetEndpoint(id);
+    try testing.expect(ep.isEmpty());
+    try testing.expectEqual(@as(u32, 0), ep.count);
+    try testing.expect(!ep.closed);
+    // Can send again after reset
+    try ep.send(ipc.Message.init(99, "ok"), null, null);
+    try testing.expectEqual(@as(u32, 1), ep.count);
+}
+
+test "count remains accurate through mixed spawn/kill/reap operations" {
+    var s = Scheduler{};
+    try testing.expectEqual(@as(u32, 0), s.count);
+
+    const t0 = try s.spawn();
+    const t1 = try s.spawn();
+    const t2 = try s.spawn();
+    try testing.expectEqual(@as(u32, 3), s.count);
+
+    s.kill(t1);
+    try testing.expectEqual(@as(u32, 3), s.count); // kill doesn't change count
+
+    s.reap(t1);
+    try testing.expectEqual(@as(u32, 2), s.count);
+
+    const t3 = try s.spawn();
+    try testing.expectEqual(@as(u32, 3), s.count);
+    try testing.expectEqual(t1, t3); // reuses slot
+
+    s.kill(t0);
+    s.kill(t2);
+    s.kill(t3);
+    s.reap(t0);
+    s.reap(t2);
+    s.reap(t3);
+    try testing.expectEqual(@as(u32, 0), s.count);
+}
+
 test "kill thread blocked on different endpoint does not wake it" {
     var s = Scheduler{};
     const t0 = try s.spawn();
