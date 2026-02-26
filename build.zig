@@ -19,8 +19,8 @@ pub fn build(b: *std.Build) void {
     const mmio = b.createModule(.{ .root_source_file = b.path("platform/raspi/mmio.zig"), .target = opts.target, .optimize = opts.optimize });
     const gpio = b.createModule(.{ .root_source_file = b.path("platform/raspi/gpio.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{.{ .name = "mmio", .module = mmio }} });
     const uart = b.createModule(.{ .root_source_file = b.path("platform/raspi/uart.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "mmio", .module = mmio }, .{ .name = "gpio", .module = gpio } } });
-    const spi = b.createModule(.{ .root_source_file = b.path("platform/raspi/spi.zig"), .target = opts.target, .optimize = opts.optimize, .imports = &.{ .{ .name = "mmio", .module = mmio }, .{ .name = "gpio", .module = gpio } } });
-    _ = spi; // Available for real-hardware builds; QEMU uses mock SPI
+    // Note: platform/raspi/spi.zig exists for real-hardware builds but is not
+    // compiled for QEMU (user-space mock SPI over UART is used instead).
 
     // Kernel modules (ordered by dependency)
     const timer = b.createModule(.{ .root_source_file = b.path("kernel/arch/aarch64/timer.zig"), .target = opts.target, .optimize = opts.optimize });

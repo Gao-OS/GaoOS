@@ -46,17 +46,15 @@ comptime {
         @compileError("User program exceeds 2MB block (would corrupt frame pool)");
 }
 
-/// Patch a single L2 page table entry to allow EL0 data access (AP[1]=1).
-fn enableEL0AccessForBlock(block_index: usize) void {
+/// Patch L2 page table entries to allow EL0 data access (AP[1]=1) for a
+/// range of 2MB blocks, then batch-invalidate the TLB once.
+fn enableEL0AccessForBlocks(start: usize, end: usize) void {
     const l2_base: [*]volatile u64 = @ptrFromInt(0x71000);
-    l2_base[block_index] |= (1 << 6); // AP[1] = 1 → EL0 RW
-
-    const va: u64 = @as(u64, block_index) << 21;
-    const tlbi_val: u64 = va >> 12;
-    asm volatile ("tlbi vae1, %[val]"
-        :
-        : [val] "r" (tlbi_val),
-    );
+    for (start..end) |block_index| {
+        l2_base[block_index] |= (1 << 6); // AP[1] = 1 → EL0 RW
+    }
+    // Single TLB invalidation for all modified entries
+    asm volatile ("tlbi vmalle1is");
     asm volatile ("dsb sy");
     asm volatile ("isb");
 }
@@ -138,9 +136,7 @@ export fn kernel_main() callconv(.{ .aarch64_aapcs = .{} }) noreturn {
     uart.puts("Setting up user space...\n");
 
     // Enable EL0 access for blocks 1-31 (user program, stack, frame pool)
-    for (1..32) |block| {
-        enableEL0AccessForBlock(block);
-    }
+    enableEL0AccessForBlocks(1, 32);
 
     // Copy embedded user binary to block 1
     const entry = copyUserProgram();
