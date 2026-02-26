@@ -60,6 +60,13 @@ pub const Thread = struct {
     blocked_ep: ThreadId = THREAD_NONE, // Endpoint this thread is blocked waiting on (THREAD_NONE = not blocked)
 };
 
+// context_switch.S uses stp/ldp at fixed offsets within Context (0..104).
+// This comptime check guards against silent ABI breakage if fields change.
+comptime {
+    if (@sizeOf(Context) != 14 * 8)
+        @compileError("Context must be 112 bytes (14 u64 registers) for context_switch.S");
+}
+
 /// Per-thread kernel stacks for context switching.
 var kernel_stacks: [MAX_THREADS][KERNEL_STACK_SIZE]u8 align(16) = @splat([_]u8{0} ** KERNEL_STACK_SIZE);
 
