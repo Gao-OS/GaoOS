@@ -127,6 +127,12 @@ pub const Scheduler = struct {
         for (&self.threads, 0..) |*thread, i| {
             if (thread.state == .free) {
                 const id: ThreadId = @intCast(i);
+                // Invariant: reap() must have cleared the cap table before
+                // marking the slot .free. Assert in debug builds to catch
+                // any code path that bypasses reap().
+                if (@import("builtin").mode == .Debug) {
+                    if (cap_tables[id].count != 0) unreachable;
+                }
                 thread.id = id;
                 thread.state = .ready;
                 // Zero context field-by-field to avoid SIMD alignment faults.
