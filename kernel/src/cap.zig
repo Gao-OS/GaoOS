@@ -124,11 +124,13 @@ pub const CapabilityTable = struct {
     }
 
     /// Look up a capability by index.
-    /// Returns null if index is invalid or slot is empty.
+    /// Returns null if index is invalid, slot is empty, or generation
+    /// is inconsistent (kernel memory corruption guard).
     pub fn lookup(self: *const CapabilityTable, index: CapIndex) ?Capability {
         if (index >= MAX_CAPS) return null;
         const slot = &self.slots[index];
         if (!slot.valid) return null;
+        if (slot.cap.generation != slot.generation) return null;
         return slot.cap;
     }
 
