@@ -26,7 +26,7 @@ processes map directly to kernel primitives instead of emulating them atop POSIX
 
 ## Build & Run
 
-Requires Nix with devenv (Zig nightly + QEMU). Minimum Zig version: 0.15.0.
+Requires Nix with devenv (Zig nightly + QEMU). Minimum Zig version: 0.15.2.
 
 ```bash
 devenv shell          # Enter development environment
