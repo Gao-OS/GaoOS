@@ -440,7 +440,8 @@ fn sysEpGrant(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, thread_cap_id
     const target_id = capObjectToId(thread_cap.object) orelse return E_BADCAP;
     const target_table = sched.getCapTable(target_id) orelse return E_BADCAP;
 
-    // Create read-only endpoint cap in target's table
+    // Create read-write endpoint cap in target's table.
+    // The recipient typically needs write (to send) and read (to receive).
     const new_idx = target_table.create(.ipc_endpoint, ep_cap.object, cap.Rights.READ_WRITE) catch {
         return E_FULL;
     };
@@ -2431,6 +2432,33 @@ test "sysThreadKill drops fault notification when supervisor endpoint is full" {
 
     // Queue count unchanged — fault was dropped, no overflow
     try testing.expectEqual(@as(u32, ipc.QUEUE_SIZE), ep.count);
+}
+
+test "sysEpGrant grants READ_WRITE rights, recipient can send" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+
+    const granted_idx: cap.CapIndex = @intCast(sysEpGrant(tid, ep_cap, child_cap));
+
+    // Resolve child
+    const parent_table = sched.getCapTable(tid).?;
+    const child_val = parent_table.lookup(child_cap).?;
+    const child_id = capObjectToId(child_val.object).?;
+    const child_table = sched.getCapTable(child_id).?;
+
+    // Verify granted cap has both read and write rights
+    const granted_cap = child_table.lookup(granted_idx).?;
+    try testing.expect(granted_cap.rights.read);
+    try testing.expect(granted_cap.rights.write);
+
+    // Child can send on the granted cap (write right confirmed)
+    try testing.expectEqual(E_OK, sysIpcSend(child_id, granted_idx, 0, 0, 0));
+    // The message should appear on tid's endpoint
+    const ep = sched.getEndpoint(tid).?;
+    try testing.expectEqual(@as(u32, 1), ep.count);
 }
 
 test "dispatch returns E_BADSYS for unknown syscall number" {
