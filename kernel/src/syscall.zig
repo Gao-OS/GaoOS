@@ -1996,6 +1996,61 @@ test "sysSupervisorSet can be updated by calling twice" {
     try testing.expectEqual(ep2_id, sched.global.threads[child_id].supervisor_ep);
 }
 
+test "sysThreadKill with no supervisor kills thread cleanly" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const child_id = capObjectToId(sched.getCapTable(tid).?.lookup(child_cap).?.object).?;
+    // child has no supervisor by default (supervisor_ep = 0xFFFFFFFF)
+    try testing.expectEqual(@as(u32, 0xFFFFFFFF), sched.global.threads[child_id].supervisor_ep);
+    // Kill must succeed without crashing despite missing supervisor
+    try testing.expectEqual(E_OK, sysThreadKill(tid, child_cap));
+    try testing.expectEqual(sched.ThreadState.dead, sched.global.threads[child_id].state);
+}
+
+test "sysFramePhys succeeds with derived read-only frame cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    // Derive a read-only cap — sysFramePhys requires only read right
+    const read_only: u8 = @bitCast(cap.Rights{ .read = true });
+    const ro_cap: cap.CapIndex = @intCast(sysCapDerive(tid, frame_cap, read_only));
+    // Physical address query succeeds with derived read-only cap
+    const phys = sysFramePhys(tid, ro_cap);
+    try testing.expect(phys >= frame_mod.USER_POOL_START);
+    try testing.expect(phys <= frame_mod.USER_POOL_END);
+    // Both caps point to the same physical frame
+    try testing.expectEqual(sysFramePhys(tid, frame_cap), phys);
+}
+
+test "sysIpcRecv returns E_AGAIN on closed empty endpoint" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    sched.getEndpoint(tid).?.close();
+    // Non-blocking recv does not distinguish closed from open on empty queue — always E_AGAIN
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecv(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(E_AGAIN, result);
+}
+
+test "sysCapRead returns frame cap type" {
+    const tid = testSetup();
+    defer testTeardown();
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    try testing.expectEqual(
+        E_OK + @intFromEnum(cap.CapabilityType.frame),
+        sysCapRead(tid, frame_cap),
+    );
+}
+
+test "sysIpcSendCap rejects non-endpoint cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    // Device cap at slot 0 (from testSetup) — not an endpoint cap
+    try testing.expectEqual(E_BADCAP, sysIpcSendCap(tid, 0, 0, 0, 0));
+}
+
 test "sysIpcRecvCap rejects non-endpoint cap" {
     const tid = testSetup();
     defer testTeardown();
