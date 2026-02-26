@@ -695,3 +695,19 @@ test "TAG_ANY wildcard receives message with tag zero" {
     try testing.expectEqual(@as(u64, 42), m2.tag);
     try testing.expect(ep.isEmpty());
 }
+
+test "Message.init with empty payload" {
+    const msg = Message.init(42, "");
+    try testing.expectEqual(@as(u64, 42), msg.tag);
+    try testing.expectEqual(@as(u32, 0), msg.payload_len);
+    try testing.expectEqual(@as(usize, 0), msg.getPayload().len);
+}
+
+test "Message.init with exactly MAX_PAYLOAD bytes" {
+    const data = [_]u8{'x'} ** MAX_PAYLOAD;
+    const msg = Message.init(1, &data);
+    try testing.expectEqual(@as(u32, MAX_PAYLOAD), msg.payload_len);
+    try testing.expectEqual(@as(usize, MAX_PAYLOAD), msg.getPayload().len);
+    try testing.expectEqual(@as(u8, 'x'), msg.getPayload()[0]);
+    try testing.expectEqual(@as(u8, 'x'), msg.getPayload()[MAX_PAYLOAD - 1]);
+}

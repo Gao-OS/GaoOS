@@ -280,3 +280,44 @@ test "notify skips thread with no supervisor" {
     sched.global.kill(id);
     sched.global.reap(id);
 }
+
+test "multiple fault notifications accumulate at supervisor endpoint" {
+    sched.global = .{};
+
+    const sup_id = try sched.global.spawn();
+    const child1 = try sched.global.spawn();
+    const child2 = try sched.global.spawn();
+
+    sched.global.threads[child1].supervisor_ep = sup_id;
+    sched.global.threads[child2].supervisor_ep = sup_id;
+
+    notify(child1, .exit, 0, 0);
+    notify(child2, .killed, 0xDEAD, 0);
+
+    const ep = sched.getEndpoint(sup_id).?;
+    try testing.expectEqual(@as(u32, 2), ep.count);
+
+    const m1 = ep.recv(FAULT_TAG).?;
+    const m2 = ep.recv(FAULT_TAG).?;
+
+    var fm1: FaultMsg = undefined;
+    var fm2: FaultMsg = undefined;
+    const d1: [*]u8 = @ptrCast(&fm1);
+    const d2: [*]u8 = @ptrCast(&fm2);
+    for (0..@sizeOf(FaultMsg)) |i| {
+        d1[i] = m1.payload[i];
+        d2[i] = m2.payload[i];
+    }
+
+    try testing.expectEqual(@as(u8, @intFromEnum(Reason.exit)), fm1.reason);
+    try testing.expectEqual(child1, fm1.thread_id);
+    try testing.expectEqual(@as(u8, @intFromEnum(Reason.killed)), fm2.reason);
+    try testing.expectEqual(child2, fm2.thread_id);
+
+    sched.global.kill(sup_id);
+    sched.global.reap(sup_id);
+    sched.global.kill(child1);
+    sched.global.reap(child1);
+    sched.global.kill(child2);
+    sched.global.reap(child2);
+}

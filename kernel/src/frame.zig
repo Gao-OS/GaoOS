@@ -228,3 +228,15 @@ test "isAllocated returns false for address past pool end" {
     // Before pool start
     try testing.expect(!fa.isAllocated(USER_POOL_START - FRAME_SIZE));
 }
+
+test "alloc after filling first bitmap word allocates from second word" {
+    var fa = FrameAllocator.init();
+    // Allocate first 64 frames — fills the first u64 word in the bitmap
+    for (0..64) |_| {
+        _ = try fa.alloc();
+    }
+    try testing.expectEqual(TOTAL_FRAMES - 64, fa.free_count);
+    // 65th allocation must come from the second bitmap word
+    const next = try fa.alloc();
+    try testing.expectEqual(USER_POOL_START + 64 * FRAME_SIZE, next);
+}

@@ -475,3 +475,21 @@ test "siblings from same parent have independent rights" {
     try testing.expect(ro_cap.rights.read and !ro_cap.rights.write);
     try testing.expect(rw_cap.rights.read and rw_cap.rights.write);
 }
+
+test "Rights.intersect with NONE yields NONE" {
+    try testing.expect(Rights.NONE.intersect(Rights.ALL).eql(Rights.NONE));
+    try testing.expect(Rights.ALL.intersect(Rights.NONE).eql(Rights.NONE));
+    try testing.expect(Rights.READ_WRITE.intersect(Rights.NONE).eql(Rights.NONE));
+    try testing.expect(Rights.NONE.intersect(Rights.NONE).eql(Rights.NONE));
+}
+
+test "derive error precedence: RightsEscalation wins over TableFull" {
+    var table = CapabilityTable{};
+    // Create a READ_ONLY parent cap at slot 0, fill remaining slots
+    const parent = try table.create(.frame, 0x1000, Rights.READ_ONLY);
+    for (1..MAX_CAPS) |_| {
+        _ = try table.create(.frame, 0, Rights.ALL);
+    }
+    // Table is full AND rights would escalate → RightsEscalation is checked first
+    try testing.expectError(error.RightsEscalation, table.derive(parent, Rights.READ_WRITE));
+}
