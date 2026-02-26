@@ -438,6 +438,27 @@ test "check on CAP_NULL returns false" {
     try testing.expect(!table.check(CAP_NULL, Rights.NONE));
 }
 
+test "check enforces grant and revoke rights individually" {
+    var table = CapabilityTable{};
+    // Grant-only cap
+    const grant_cap = try table.create(.ipc_endpoint, 0, Rights{ .grant = true });
+    try testing.expect(table.check(grant_cap, Rights{ .grant = true }));
+    try testing.expect(!table.check(grant_cap, Rights{ .read = true }));
+    try testing.expect(!table.check(grant_cap, Rights{ .revoke = true }));
+
+    // Revoke-only cap
+    const revoke_cap = try table.create(.ipc_endpoint, 0, Rights{ .revoke = true });
+    try testing.expect(table.check(revoke_cap, Rights{ .revoke = true }));
+    try testing.expect(!table.check(revoke_cap, Rights{ .grant = true }));
+    try testing.expect(!table.check(revoke_cap, Rights.READ_WRITE));
+}
+
+test "Rights NONE is subset of itself" {
+    try testing.expect(Rights.NONE.isSubsetOf(Rights.NONE));
+    try testing.expect(Rights.ALL.isSubsetOf(Rights.ALL));
+    try testing.expect(Rights.READ_ONLY.isSubsetOf(Rights.READ_ONLY));
+}
+
 test "siblings from same parent have independent rights" {
     var table = CapabilityTable{};
     const parent = try table.create(.frame, 0x1000, Rights.ALL);
