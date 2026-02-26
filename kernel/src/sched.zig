@@ -675,6 +675,33 @@ test "spawn after table full and reap frees a slot" {
     try testing.expectEqual(@as(u32, MAX_THREADS), s.count);
 }
 
+test "resetEndpoint clears messages and reopens closed endpoint" {
+    const id = 0;
+    // Start fresh
+    resetEndpoint(id);
+    const ep = getEndpoint(id).?;
+    // Send a message and close
+    try ep.send(ipc.Message.init(42, "hi"), null, null);
+    ep.close();
+    try testing.expect(ep.closed);
+    try testing.expectEqual(@as(u32, 1), ep.count);
+
+    // Reset should drain messages and reopen
+    resetEndpoint(id);
+    try testing.expect(!ep.closed);
+    try testing.expectEqual(@as(u32, 0), ep.count);
+    try testing.expect(ep.isEmpty());
+    // After reset, new sends should succeed
+    try ep.send(ipc.Message.init(99, "ok"), null, null);
+    try testing.expectEqual(@as(u32, 1), ep.count);
+}
+
+test "resetEndpoint ignores out-of-range id" {
+    // Must not crash
+    resetEndpoint(MAX_THREADS);
+    resetEndpoint(0xFFFFFFFF);
+}
+
 test "resetCapTable clears all slots and count" {
     const id = 0;
     resetCapTable(id);

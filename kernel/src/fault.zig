@@ -231,6 +231,38 @@ test "fault reason cap_violation serializes correctly" {
     try testing.expectEqual(@as(u64, 0x9600_0004), copy.esr);
 }
 
+test "fault reason exit serializes correctly" {
+    var ep = ipc.Endpoint{};
+    notifyEndpoint(&ep, .exit, 1, 0xABCD, 0);
+
+    const received = ep.recv(FAULT_TAG).?;
+    var copy: FaultMsg = undefined;
+    const dst: [*]u8 = @ptrCast(&copy);
+    for (0..@sizeOf(FaultMsg)) |i| {
+        dst[i] = received.payload[i];
+    }
+    try testing.expectEqual(@as(u8, @intFromEnum(Reason.exit)), copy.reason);
+    try testing.expectEqual(@as(u32, 1), copy.thread_id);
+    try testing.expectEqual(@as(u64, 0xABCD), copy.fault_addr);
+    try testing.expectEqual(@as(u64, 0), copy.esr);
+}
+
+test "fault reason exception serializes correctly" {
+    var ep = ipc.Endpoint{};
+    notifyEndpoint(&ep, .exception, 15, 0xF00D_CAFE, 0x9600_0048);
+
+    const received = ep.recv(FAULT_TAG).?;
+    var copy: FaultMsg = undefined;
+    const dst: [*]u8 = @ptrCast(&copy);
+    for (0..@sizeOf(FaultMsg)) |i| {
+        dst[i] = received.payload[i];
+    }
+    try testing.expectEqual(@as(u8, @intFromEnum(Reason.exception)), copy.reason);
+    try testing.expectEqual(@as(u32, 15), copy.thread_id);
+    try testing.expectEqual(@as(u64, 0xF00D_CAFE), copy.fault_addr);
+    try testing.expectEqual(@as(u64, 0x9600_0048), copy.esr);
+}
+
 test "notify skips thread with no supervisor" {
     sched.global = .{};
 
