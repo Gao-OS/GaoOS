@@ -1124,3 +1124,28 @@ test "kill ready thread transitions directly to dead without ep side-effect" {
     s.kill(bystander);
     s.reap(bystander);
 }
+
+test "schedule returns null when all threads are dead but not yet reaped" {
+    var s = Scheduler{};
+    // Reset endpoints
+    for (&endpoints) |*ep| ep.* = ipc.Endpoint{};
+
+    const a = s.spawn() catch unreachable;
+    const b = s.spawn() catch unreachable;
+    try testing.expectEqual(@as(u32, 2), s.count);
+
+    // Kill both threads (dead but not reaped)
+    s.threads[a].state = .running;
+    s.current = a;
+    s.has_current = true;
+    s.kill(a);
+    s.kill(b);
+    try testing.expectEqual(ThreadState.dead, s.threads[a].state);
+    try testing.expectEqual(ThreadState.dead, s.threads[b].state);
+    // count is still 2 (only reap decrements count)
+    try testing.expectEqual(@as(u32, 2), s.count);
+
+    // schedule must still return null — no runnable threads
+    s.has_current = false;
+    try testing.expect(s.schedule() == null);
+}

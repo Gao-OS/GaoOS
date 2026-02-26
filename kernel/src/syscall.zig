@@ -343,6 +343,7 @@ fn sysIpcSend(thread_id: sched.ThreadId, ep_cap_idx: cap.CapIndex, msg_ptr: u64,
 fn sysIpcRecv(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex, buf_ptr: u64, tag_filter: u64) u64 {
     const resolved = resolveRecvEndpoint(thread_id, ep_cap_idx) orelse {
         frame[31] = E_BADCAP;
+        frame[32] = 0;
         return E_BADCAP;
     };
     const ep = resolved.ep;
@@ -350,11 +351,13 @@ fn sysIpcRecv(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex
     // Validate user buffer before consuming message (avoid losing messages on bad ptr)
     if (buf_ptr != 0 and !isValidUserRange(buf_ptr, ipc.MAX_PAYLOAD)) {
         frame[31] = E_BADARG;
+        frame[32] = 0;
         return E_BADARG;
     }
 
     const msg = ep.recv(tag_filter) orelse {
         frame[31] = E_AGAIN;
+        frame[32] = 0; // ABI: always define x1 on return (tag = 0 on no-message)
         return E_AGAIN;
     };
 
@@ -373,6 +376,7 @@ fn sysIpcRecv(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex
 fn sysIpcRecvBlock(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.CapIndex, buf_ptr: u64, tag_filter: u64) u64 {
     const resolved = resolveRecvEndpoint(thread_id, ep_cap_idx) orelse {
         frame[31] = E_BADCAP;
+        frame[32] = 0;
         return E_BADCAP;
     };
     const ep = resolved.ep;
@@ -380,6 +384,7 @@ fn sysIpcRecvBlock(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.Cap
     // Validate user buffer before consuming message
     if (buf_ptr != 0 and !isValidUserRange(buf_ptr, ipc.MAX_PAYLOAD)) {
         frame[31] = E_BADARG;
+        frame[32] = 0;
         return E_BADARG;
     }
 
@@ -388,6 +393,7 @@ fn sysIpcRecvBlock(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.Cap
         // so the caller doesn't block forever waiting for a dead sender.
         if (ep.closed) {
             frame[31] = E_CLOSED;
+            frame[32] = 0;
             return E_CLOSED;
         }
         // No message available — block the calling thread.
@@ -395,11 +401,13 @@ fn sysIpcRecvBlock(thread_id: sched.ThreadId, frame: [*]u64, ep_cap_idx: cap.Cap
         // endpoint later unblocks us, user space retries the recv.
         const thread = sched.global.getThread(thread_id) orelse {
             frame[31] = E_AGAIN;
+            frame[32] = 0;
             return E_AGAIN;
         };
         thread.blocked_ep = resolved.ep_idx;
         sched.global.blockCurrent();
         frame[31] = E_AGAIN;
+        frame[32] = 0;
         return E_AGAIN;
     };
 
@@ -3159,6 +3167,80 @@ test "sysIpcSendCap automatically wakes thread blocked on sysIpcRecvCapBlock" {
     // Receiver must now be .ready (woken by sysIpcSendCap's internal wakeBlockedRecv)
     try testing.expectEqual(sched.ThreadState.ready, sched.global.threads[tid].state);
     try testing.expectEqual(sched.THREAD_NONE, sched.global.threads[tid].blocked_ep);
+}
+
+test "sysIpcRecvBlock blocks when messages queued but none match tag filter" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Queue two messages with specific tags
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 0xAAAA));
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 0xBBBB));
+
+    // Reset running state (sysIpcSend may have changed it)
+    sched.global.threads[tid].state = .running;
+    sched.global.current = tid;
+    sched.global.has_current = true;
+
+    // Try blocking recv with a tag that doesn't match any queued message
+    var frame_buf: [34]u64 = undefined;
+    _ = sysIpcRecvBlock(tid, &frame_buf, ep_cap, 0, 0xCCCC);
+
+    // Thread should be blocked (no matching message despite queue non-empty)
+    try testing.expectEqual(sched.ThreadState.blocked, sched.global.threads[tid].state);
+    // Both original messages should still be in the queue
+    const ep_idx: sched.ThreadId = @intCast(sched.getCapTable(tid).?.lookup(ep_cap).?.object);
+    const ep = sched.getEndpoint(ep_idx).?;
+    try testing.expectEqual(@as(u32, 2), ep.count);
+}
+
+test "sysIpcRecv returns zero tag in frame[32] on E_AGAIN" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Set frame[32] to a non-zero sentinel to verify it gets zeroed
+    var frame_buf: [34]u64 = undefined;
+    frame_buf[32] = 0xDEADDEAD;
+    _ = sysIpcRecv(tid, &frame_buf, ep_cap, 0, 0);
+
+    // x0 (frame[31]) should be E_AGAIN, x1 (frame[32]) should be 0
+    try testing.expectEqual(E_AGAIN, frame_buf[31]);
+    try testing.expectEqual(@as(u64, 0), frame_buf[32]);
+}
+
+test "sysIpcRecvBlock returns zero tag in frame[32] on blocking E_AGAIN" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    sched.global.threads[tid].state = .running;
+    sched.global.current = tid;
+    sched.global.has_current = true;
+
+    var frame_buf: [34]u64 = undefined;
+    frame_buf[32] = 0xDEADDEAD;
+    _ = sysIpcRecvBlock(tid, &frame_buf, ep_cap, 0, 0);
+
+    // x1 (frame[32]) must be 0 on the blocking path, not stale
+    try testing.expectEqual(E_AGAIN, frame_buf[31]);
+    try testing.expectEqual(@as(u64, 0), frame_buf[32]);
+}
+
+test "sysIpcRecv with zero-length payload and non-null buf_ptr succeeds" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Send a zero-length message
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 0x42));
+
+    // Recv with a valid non-null buf_ptr should succeed without crashing
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecv(tid, &frame_buf, ep_cap, 0x200000, 0);
+    try testing.expectEqual(@as(u64, 0), result); // payload_len = 0
+    try testing.expectEqual(@as(u64, 0x42), frame_buf[32]); // tag preserved
 }
 
 fn putDec(val: u32) void {

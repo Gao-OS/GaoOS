@@ -982,3 +982,77 @@ test "send with cap_count > 0 but all caps CAP_NULL is treated as no-op cap tran
     try testing.expectEqual(cap.CAP_NULL, received.caps[0]);
     try testing.expectEqual(cap.CAP_NULL, received.caps[1]);
 }
+
+test "selective recv with dual-wrap compaction at buffer boundary" {
+    // Head near end of ring buffer, match wraps around.
+    // head=14, 5 messages queued at physical slots 14,15,0,1,2.
+    // Match at logical position 3 (tag=0x33, physical slot 1).
+    // Compaction must shift slots at wrapped positions correctly.
+    var ep = Endpoint{};
+
+    // Fill to advance head to slot 14: enqueue 14 msgs, dequeue all
+    var i: u32 = 0;
+    while (i < 14) : (i += 1) {
+        try ep.send(Message.init(0xFF, "filler"), null, null);
+    }
+    i = 0;
+    while (i < 14) : (i += 1) {
+        _ = ep.recv(TAG_ANY);
+    }
+    // Now head=14, tail=14, count=0
+
+    // Enqueue 5 messages at physical slots 14,15,0,1,2
+    try ep.send(Message.init(0x10, "a"), null, null);
+    try ep.send(Message.init(0x20, "b"), null, null);
+    try ep.send(Message.init(0x30, "c"), null, null);
+    try ep.send(Message.init(0x33, "match"), null, null); // logical pos 3
+    try ep.send(Message.init(0x40, "d"), null, null);
+
+    // Selective recv with tag 0x33 — extracts logical position 3
+    const msg = ep.recv(0x33).?;
+    try testing.expectEqual(@as(u64, 0x33), msg.tag);
+    try testing.expectEqual(@as(u32, 4), ep.count); // 5 - 1 = 4 remaining
+
+    // Remaining messages in order: 0x10, 0x20, 0x30, 0x40
+    const m1 = ep.recv(TAG_ANY).?;
+    try testing.expectEqual(@as(u64, 0x10), m1.tag);
+    const m2 = ep.recv(TAG_ANY).?;
+    try testing.expectEqual(@as(u64, 0x20), m2.tag);
+    const m3 = ep.recv(TAG_ANY).?;
+    try testing.expectEqual(@as(u64, 0x30), m3.tag);
+    const m4 = ep.recv(TAG_ANY).?;
+    try testing.expectEqual(@as(u64, 0x40), m4.tag);
+    try testing.expectEqual(@as(u32, 0), ep.count);
+}
+
+test "payload bytes zeroed between ring buffer slot reuse" {
+    // Send a 256-byte message, receive it. Send a 4-byte message into the
+    // same physical slot. Receive and verify no data leaks from previous message.
+    var ep = Endpoint{};
+
+    // First: send a full 256-byte message
+    var long_payload: [MAX_PAYLOAD]u8 = undefined;
+    @memset(&long_payload, 0xAB);
+    var long_msg = Message{};
+    long_msg.tag = 1;
+    @memcpy(long_msg.payload[0..MAX_PAYLOAD], &long_payload);
+    long_msg.payload_len = MAX_PAYLOAD;
+    try ep.send(long_msg, null, null);
+
+    // Consume it
+    _ = ep.recv(TAG_ANY).?;
+
+    // Now send a 4-byte message — reuses the same physical slot
+    const short_msg = Message.init(2, "tiny");
+    try ep.send(short_msg, null, null);
+
+    // Receive the short message
+    const received = ep.recv(TAG_ANY).?;
+    try testing.expectEqual(@as(u64, 2), received.tag);
+    try testing.expectEqual(@as(u32, 4), received.payload_len);
+
+    // Bytes beyond payload_len must be zero (not leaked from previous msg)
+    for (received.payload[4..MAX_PAYLOAD]) |byte| {
+        try testing.expectEqual(@as(u8, 0), byte);
+    }
+}
