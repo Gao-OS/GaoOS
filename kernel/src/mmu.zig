@@ -39,6 +39,11 @@ comptime {
 /// A single page table (512 entries).
 pub const PageTable = [ENTRIES_PER_TABLE]PageTableEntry;
 
+/// Convert a physical address to the output_pa field (address >> 12, truncated to u52).
+fn toOutputPa(addr: u64) u52 {
+    return @truncate(addr >> 12);
+}
+
 /// Allocator interface for page table operations.
 pub const Allocator = struct {
     allocFn: *const fn (*anyopaque) anyerror!PhysAddr,
@@ -83,7 +88,7 @@ pub fn mapPage(
             .sh = 0,
             .af = 1,
             .ng = 0,
-            .output_pa = @truncate((new_frame >> 12) & 0xFFFFFFFFFFFFF),
+            .output_pa = toOutputPa(new_frame),
         };
         break :blk table;
     };
@@ -105,7 +110,7 @@ pub fn mapPage(
             .sh = 0,
             .af = 1,
             .ng = 0,
-            .output_pa = @truncate((new_frame >> 12) & 0xFFFFFFFFFFFFF),
+            .output_pa = toOutputPa(new_frame),
         };
         break :blk table;
     };
@@ -127,7 +132,7 @@ pub fn mapPage(
             .sh = 0,
             .af = 1,
             .ng = 0,
-            .output_pa = @truncate((new_frame >> 12) & 0xFFFFFFFFFFFFF),
+            .output_pa = toOutputPa(new_frame),
         };
         break :blk table;
     };
@@ -142,7 +147,7 @@ pub fn mapPage(
         .sh = flags.sh,
         .af = 1,
         .ng = flags.ng,
-        .output_pa = @truncate((paddr >> 12) & 0xFFFFFFFFFFFFF),
+        .output_pa = toOutputPa(paddr),
     };
 }
 
