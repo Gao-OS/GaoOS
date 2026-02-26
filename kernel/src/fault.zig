@@ -357,3 +357,73 @@ test "notify on thread with no supervisor is a no-op" {
     sched.global.kill(id);
     sched.global.reap(id);
 }
+
+test "notify silently drops when supervisor endpoint queue is full" {
+    sched.global = .{};
+    for (0..sched.MAX_THREADS) |i| {
+        sched.resetCapTable(@intCast(i));
+        sched.resetEndpoint(@intCast(i));
+    }
+    const sup_id = try sched.global.spawn();
+    const child_id = try sched.global.spawn();
+    _ = sched.global.schedule();
+
+    // Set supervisor
+    sched.global.threads[child_id].supervisor_ep = sup_id;
+
+    // Fill supervisor's endpoint to capacity
+    const sup_ep = sched.getEndpoint(sup_id).?;
+    for (0..ipc.QUEUE_SIZE) |i| {
+        try sup_ep.send(ipc.Message.init(@intCast(i), "fill"), null, null);
+    }
+    try testing.expectEqual(@as(u32, ipc.QUEUE_SIZE), sup_ep.count);
+
+    // Notify should silently drop (queue full, best-effort)
+    notify(child_id, .exit, 0, 0);
+
+    // Queue should still be at capacity — fault was dropped, not panicked
+    try testing.expectEqual(@as(u32, ipc.QUEUE_SIZE), sup_ep.count);
+
+    sched.global.kill(child_id);
+    sched.global.reap(child_id);
+    sched.global.kill(sup_id);
+    sched.global.reap(sup_id);
+}
+
+test "multiple fault notifications from different children" {
+    sched.global = .{};
+    for (0..sched.MAX_THREADS) |i| {
+        sched.resetCapTable(@intCast(i));
+        sched.resetEndpoint(@intCast(i));
+    }
+    const sup_id = try sched.global.spawn();
+    _ = sched.global.schedule();
+
+    // Spawn 4 children all supervised by sup_id
+    var children: [4]sched.ThreadId = undefined;
+    for (&children) |*c| {
+        c.* = try sched.global.spawn();
+        sched.global.threads[c.*].supervisor_ep = sup_id;
+    }
+
+    // Kill all children — each should deliver a fault notification
+    for (children) |c| {
+        notify(c, .killed, 0, 0);
+        sched.global.kill(c);
+    }
+
+    // Supervisor should have received 4 fault messages
+    const sup_ep = sched.getEndpoint(sup_id).?;
+    try testing.expectEqual(@as(u32, 4), sup_ep.count);
+
+    // All should have FAULT_TAG
+    for (0..4) |_| {
+        const msg = sup_ep.recv(FAULT_TAG).?;
+        try testing.expectEqual(FAULT_TAG, msg.tag);
+    }
+    try testing.expect(sup_ep.isEmpty());
+
+    for (children) |c| sched.global.reap(c);
+    sched.global.kill(sup_id);
+    sched.global.reap(sup_id);
+}

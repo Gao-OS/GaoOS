@@ -2890,6 +2890,71 @@ test "sysIpcSendCap wakes blocked receiver" {
     try testing.expectEqual(sched.ThreadState.ready, sched.global.threads[recv_id].state);
 }
 
+test "sysIpcSendCap to closed endpoint returns E_CLOSED and preserves sender cap" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Create receiver and close its endpoint (simulates dead receiver)
+    const recv_cap_idx: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const table = sched.getCapTable(tid).?;
+    const recv_val = table.lookup(recv_cap_idx).?;
+    const recv_id = capObjectToId(recv_val.object).?;
+
+    // Close receiver's endpoint
+    sched.getEndpoint(recv_id).?.close();
+
+    // Sender creates ep cap to receiver and tries to send a frame cap
+    const sender_ep = table.create(.ipc_endpoint, @intCast(recv_id), cap.Rights.ALL) catch unreachable;
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+
+    const result = sysIpcSendCap(tid, sender_ep, 0, 0, frame_cap);
+    try testing.expectEqual(E_CLOSED, result);
+
+    // Sender's frame cap should still exist (not leaked by failed transfer)
+    try testing.expect(table.lookup(frame_cap) != null);
+}
+
+test "sysIpcSend to full queue then drain and resend succeeds" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Fill queue
+    for (0..16) |i| {
+        try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, @intCast(i)));
+    }
+    try testing.expectEqual(E_FULL, sysIpcSend(tid, ep_cap, 0, 0, 99));
+
+    // Drain one message
+    var frame_buf: [34]u64 = undefined;
+    _ = sysIpcRecv(tid, &frame_buf, ep_cap, 0, 0);
+
+    // Now can send again
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 99));
+}
+
+test "sysIpcRecvCapBlock returns E_CLOSED on endpoint closed by thread kill" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Create child and get its endpoint
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const table = sched.getCapTable(tid).?;
+    const child_val = table.lookup(child_cap).?;
+    const child_id = capObjectToId(child_val.object).?;
+
+    // Parent creates ep cap for child's endpoint
+    const ep_to_child = table.create(.ipc_endpoint, @intCast(child_id), cap.Rights.ALL) catch unreachable;
+
+    // Kill child (closes its endpoint)
+    _ = sysThreadKill(tid, child_cap);
+
+    // RecvCapBlock on closed endpoint should return E_CLOSED (not hang)
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvCapBlock(tid, &frame_buf, ep_to_child, 0, 0);
+    try testing.expectEqual(E_CLOSED, result);
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');
