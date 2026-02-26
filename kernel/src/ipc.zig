@@ -657,6 +657,28 @@ test "getPayload returns correct slice" {
     try testing.expectEqualSlices(u8, "hello", p);
 }
 
+test "send with cap_count and null tables skips transfer" {
+    // When sender_table or receiver_table is null, cap transfer is skipped.
+    // The message is enqueued with cap_count=0 preserved but no caps moved.
+    // This is the correct behavior: sysIpcSend always passes null tables for
+    // non-cap sends, and sysIpcSendCap always provides both tables.
+    var ep = Endpoint{};
+    var msg = Message.init(7, "data");
+    msg.cap_count = 1;
+    msg.caps[0] = 42; // Fake cap index — should NOT be transferred
+
+    // send with null tables — cap transfer skipped, no error
+    try ep.send(msg, null, null);
+    try testing.expectEqual(@as(u32, 1), ep.count);
+
+    const received = ep.recv(TAG_ANY).?;
+    // The message payload arrives but cap_count reflects what was queued
+    try testing.expectEqual(@as(u32, 4), received.payload_len); // "data" = 4 bytes
+    // cap fields preserved as-is (no actual transfer occurred)
+    try testing.expectEqual(@as(u32, 1), received.cap_count);
+    try testing.expectEqual(@as(cap.CapIndex, 42), received.caps[0]);
+}
+
 test "TAG_ANY wildcard receives message with tag zero" {
     // TAG_ANY == 0, so filter=0 acts as wildcard, not as selective filter for tag=0.
     // This documents the design constraint: messages with tag=0 cannot be selectively
