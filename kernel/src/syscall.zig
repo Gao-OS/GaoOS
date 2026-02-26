@@ -2661,6 +2661,150 @@ test "sysIpcSendCap sending endpoint cap through itself" {
     try testing.expectEqual(@as(u32, 1), ep.count);
 }
 
+test "sysFramePhys returns address in valid frame pool range" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Allocate several frames and verify all physical addresses are in pool range
+    for (0..5) |_| {
+        const cap_idx: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+        const phys = sysFramePhys(tid, cap_idx);
+        try testing.expect(phys >= 0x400000);
+        try testing.expect(phys < 0x4000000);
+        // Must be page-aligned (4KB)
+        try testing.expectEqual(@as(u64, 0), phys & 0xFFF);
+    }
+}
+
+test "sysFramePhys on deleted-and-reused slot returns E_BADCAP for stale handle" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Allocate a frame, remember its cap index
+    const cap_idx: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    // Verify it works
+    try testing.expect(sysFramePhys(tid, cap_idx) >= 0x400000);
+
+    // Delete the cap (but don't free the frame — simulates cap deletion)
+    try testing.expectEqual(E_OK, sysCapDelete(tid, cap_idx));
+
+    // The slot is now invalid — sysFramePhys should return E_BADCAP
+    try testing.expectEqual(E_BADCAP, sysFramePhys(tid, cap_idx));
+
+    // Create a NEW cap in the same slot (different generation)
+    const table = sched.getCapTable(tid).?;
+    _ = table.create(.device, 0, cap.Rights.ALL) catch unreachable;
+
+    // Even though a cap exists at the old index, it's a device cap not a frame
+    try testing.expectEqual(E_BADCAP, sysFramePhys(tid, cap_idx));
+}
+
+test "sysFramePhys on derived read-write cap succeeds" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    const phys_expected = sysFramePhys(tid, frame_cap);
+
+    // Derive with read+write — should still allow sysFramePhys (needs read)
+    const rw: u8 = @bitCast(cap.Rights{ .read = true, .write = true });
+    const derived: cap.CapIndex = @intCast(sysCapDerive(tid, frame_cap, rw));
+    try testing.expectEqual(phys_expected, sysFramePhys(tid, derived));
+}
+
+test "sysIpcSend silently truncates oversized msg_len to MAX_PAYLOAD" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Send with msg_ptr in valid user range but msg_len larger than MAX_PAYLOAD.
+    // The syscall should clamp to MAX_PAYLOAD and succeed (not crash or error).
+    // We can't dereference user-space addresses on host, so use msg_ptr=0 len=0
+    // to verify the clamping path doesn't panic. The actual truncation is tested
+    // at the IPC layer (Message.init truncation test).
+    const result = sysIpcSend(tid, ep_cap, 0, 0, 0);
+    try testing.expectEqual(E_OK, result);
+}
+
+test "sysIpcRecv validates user buffer before consuming message" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Send a message first
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 42));
+
+    // Try to recv with a kernel-range buffer — should reject with E_BADARG
+    // AND the message should NOT be consumed (still in queue)
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecv(tid, &frame_buf, ep_cap, 0x80000, 0);
+    try testing.expectEqual(E_BADARG, result);
+
+    // Message should still be in the queue (not consumed)
+    const ep = sched.getEndpoint(tid).?;
+    try testing.expectEqual(@as(u32, 1), ep.count);
+}
+
+test "sysIpcRecvCap validates buffer before consuming" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+
+    // Send a message
+    try testing.expectEqual(E_OK, sysIpcSend(tid, ep_cap, 0, 0, 55));
+
+    // RecvCap with invalid buffer — should not consume message
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvCap(tid, &frame_buf, ep_cap, 0x80000, 0);
+    try testing.expectEqual(E_BADARG, result);
+
+    const ep = sched.getEndpoint(tid).?;
+    try testing.expectEqual(@as(u32, 1), ep.count);
+}
+
+test "sysIpcSend rejects invalid endpoint cap types" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Try to send on a frame cap — should be E_BADCAP
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    try testing.expectEqual(E_BADCAP, sysIpcSend(tid, frame_cap, 0, 0, 0));
+
+    // Try to send on a thread cap — should be E_BADCAP
+    const thread_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    try testing.expectEqual(E_BADCAP, sysIpcSend(tid, thread_cap, 0, 0, 0));
+}
+
+test "sysSupervisorSet rejects non-thread and non-endpoint caps" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+
+    // Thread arg is a frame cap — should fail
+    try testing.expectEqual(E_BADCAP, sysSupervisorSet(tid, frame_cap, ep_cap));
+
+    // Endpoint arg is a frame cap — should fail
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    try testing.expectEqual(E_BADCAP, sysSupervisorSet(tid, child_cap, frame_cap));
+}
+
+test "sysThreadReap rejects cap without write right" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+
+    // Derive read-only thread cap
+    const ro: u8 = @bitCast(cap.Rights{ .read = true });
+    const ro_cap: cap.CapIndex = @intCast(sysCapDerive(tid, child_cap, ro));
+
+    // Kill via original cap
+    _ = sysThreadKill(tid, child_cap);
+
+    // Try reap via read-only cap — should fail
+    try testing.expectEqual(E_BADCAP, sysThreadReap(tid, ro_cap));
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');

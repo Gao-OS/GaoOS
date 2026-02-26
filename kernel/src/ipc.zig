@@ -146,23 +146,26 @@ pub const Endpoint = struct {
             return msg;
         }
 
-        // Selective receive: scan for matching tag
-        // Phase 1: linear scan with compaction (not optimal, but correct)
+        // Selective receive: linear scan for matching tag, then compact only
+        // the prefix up to the matched position (not the entire tail).
+        // This is O(N) scan + O(K) compaction where K = position of the match,
+        // instead of O(N) for every match.
         var scan: u32 = 0;
         while (scan < self.count) : (scan += 1) {
             const idx = (self.head + scan) % QUEUE_SIZE;
             if (self.queue[idx].tag == tag_filter) {
                 const msg = self.queue[idx];
 
-                // Compact: shift remaining messages forward
-                var shift: u32 = scan;
-                while (shift + 1 < self.count) : (shift += 1) {
-                    const from = (self.head + shift + 1) % QUEUE_SIZE;
-                    const to = (self.head + shift) % QUEUE_SIZE;
-                    self.queue[to] = self.queue[from];
+                // Compact: shift messages [head..scan) forward by one slot,
+                // then advance head. This moves only the prefix before the match.
+                var i: u32 = scan;
+                while (i > 0) : (i -= 1) {
+                    const dst = (self.head + i) % QUEUE_SIZE;
+                    const src = (self.head + i - 1) % QUEUE_SIZE;
+                    self.queue[dst] = self.queue[src];
                 }
+                self.head = (self.head + 1) % QUEUE_SIZE;
                 self.count -= 1;
-                self.tail = (self.head + self.count) % QUEUE_SIZE;
 
                 return msg;
             }
