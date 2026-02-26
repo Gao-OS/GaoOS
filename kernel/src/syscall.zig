@@ -2051,6 +2051,56 @@ test "sysIpcSendCap rejects non-endpoint cap" {
     try testing.expectEqual(E_BADCAP, sysIpcSendCap(tid, 0, 0, 0, 0));
 }
 
+test "sysExit followed by sysThreadReap is valid lifecycle" {
+    const tid = testSetup();
+    defer testTeardown();
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    const table = sched.getCapTable(tid).?;
+    const child_id = capObjectToId(table.lookup(child_cap).?.object).?;
+    // Child exits — becomes dead
+    _ = sysExit(child_id);
+    try testing.expectEqual(sched.ThreadState.dead, sched.global.threads[child_id].state);
+    // Supervisor reaps — thread freed, cap deleted
+    try testing.expectEqual(E_OK, sysThreadReap(tid, child_cap));
+    try testing.expectEqual(sched.ThreadState.free, sched.global.threads[child_id].state);
+    try testing.expect(table.lookup(child_cap) == null);
+}
+
+test "sysEpGrant succeeds with read-only thread cap as target" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    const child_cap: cap.CapIndex = @intCast(sysThreadCreate(tid, 0x200000, 0x300000));
+    // Derive a read-only thread cap — sysEpGrant uses thread cap only for target identity
+    const table = sched.getCapTable(tid).?;
+    const ro_thread = table.derive(child_cap, cap.Rights{ .read = true }) catch unreachable;
+    // Grant must succeed: no grant right required on the target thread cap
+    const result = sysEpGrant(tid, ep_cap, ro_thread);
+    try testing.expect(result < 256);
+}
+
+test "sysCapDelete rejects CAP_NULL sentinel" {
+    const tid = testSetup();
+    defer testTeardown();
+    try testing.expectEqual(E_BADCAP, sysCapDelete(tid, cap.CAP_NULL));
+}
+
+test "sysCapRead returns irq and aspace cap types" {
+    const tid = testSetup();
+    defer testTeardown();
+    const table = sched.getCapTable(tid).?;
+    const irq_cap = table.create(.irq, 0, cap.Rights.ALL) catch unreachable;
+    const aspace_cap = table.create(.aspace, 0, cap.Rights.ALL) catch unreachable;
+    try testing.expectEqual(
+        E_OK + @intFromEnum(cap.CapabilityType.irq),
+        sysCapRead(tid, irq_cap),
+    );
+    try testing.expectEqual(
+        E_OK + @intFromEnum(cap.CapabilityType.aspace),
+        sysCapRead(tid, aspace_cap),
+    );
+}
+
 test "sysIpcSendCap rejects endpoint cap without write right" {
     const tid = testSetup();
     defer testTeardown();
