@@ -382,6 +382,15 @@ test "spawnAt sets context fields" {
     try testing.expect(thread.stack_base != 0);
 }
 
+test "spawnAt sets context.sp to kernel stack base" {
+    var s = Scheduler{};
+    const id = try s.spawnAt(0x200000, 0x300000, 0x80100);
+    const thread = s.getThread(id).?;
+    // Kernel stack pointer must equal stack_base (top of kernel stack)
+    try testing.expectEqual(thread.stack_base, thread.context.sp);
+    try testing.expect(thread.stack_base != 0);
+}
+
 test "getThread returns null for free slot" {
     var s = Scheduler{};
     try testing.expect(s.getThread(0) == null); // slot 0 is free
