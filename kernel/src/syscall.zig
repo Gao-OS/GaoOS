@@ -2101,6 +2101,54 @@ test "sysCapRead returns irq and aspace cap types" {
     );
 }
 
+test "dispatch SYS_EXIT updates ELR to idle loop" {
+    const tid = testSetup();
+    defer testTeardown();
+    var frame_buf = [_]u64{0} ** 34;
+    frame_buf[6] = SYS_EXIT;
+    dispatch(tid, &frame_buf);
+    // SYS_EXIT redirects ELR to idle loop so the kernel thread returns there instead of user space
+    try testing.expectEqual(platform.idleLoopAddr(), frame_buf[29]);
+    try testing.expectEqual(@as(u64, 0x3c5), frame_buf[30]); // SPSR = EL1h, DAIF masked
+    try testing.expectEqual(sched.ThreadState.dead, sched.global.threads[tid].state);
+}
+
+test "dispatch SYS_IPC_RECV_CAP does not clobber frame writes" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    // Send a message without a cap
+    _ = sysIpcSend(tid, ep_cap, 0, 0, 0xABCD);
+    var frame_buf = [_]u64{0} ** 34;
+    frame_buf[6] = SYS_IPC_RECV_CAP;
+    frame_buf[31] = @as(u64, ep_cap); // x0 = ep_cap_idx
+    frame_buf[32] = 0; // x1 = buf_ptr
+    frame_buf[0] = 0; // x2 = tag_filter
+    dispatch(tid, &frame_buf);
+    // dispatch must NOT overwrite frame[31] for recv-cap syscalls
+    try testing.expectEqual(@as(u64, 0), frame_buf[31]); // payload_len
+    try testing.expectEqual(@as(u64, cap.CAP_NULL), frame_buf[32]); // no cap transferred
+}
+
+test "dispatch SYS_IPC_RECV_BLOCK does not clobber frame writes" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    sched.global.threads[tid].state = .running;
+    sched.global.current = tid;
+    sched.global.has_current = true;
+    var frame_buf = [_]u64{0} ** 34;
+    frame_buf[6] = SYS_IPC_RECV_BLOCK;
+    frame_buf[31] = @as(u64, ep_cap);
+    frame_buf[32] = 0; // buf_ptr
+    frame_buf[0] = 0; // tag_filter
+    dispatch(tid, &frame_buf);
+    // Empty endpoint: sysIpcRecvBlock writes E_AGAIN to frame[31] and blocks thread
+    // dispatch must NOT overwrite with its own result copy
+    try testing.expectEqual(E_AGAIN, frame_buf[31]);
+    try testing.expectEqual(sched.ThreadState.blocked, sched.global.threads[tid].state);
+}
+
 test "sysIpcSendCap rejects endpoint cap without write right" {
     const tid = testSetup();
     defer testTeardown();
