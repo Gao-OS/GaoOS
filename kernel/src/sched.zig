@@ -725,7 +725,7 @@ test "resetEndpoint clears messages and reopens closed endpoint" {
 test "resetEndpoint ignores out-of-range id" {
     // Must not crash
     resetEndpoint(MAX_THREADS);
-    resetEndpoint(0xFFFFFFFF);
+    resetEndpoint(THREAD_NONE);
 }
 
 test "resetCapTable clears all slots and count" {
