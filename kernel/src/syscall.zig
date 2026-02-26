@@ -1996,6 +1996,56 @@ test "sysSupervisorSet can be updated by calling twice" {
     try testing.expectEqual(ep2_id, sched.global.threads[child_id].supervisor_ep);
 }
 
+test "sysIpcRecvCap rejects non-endpoint cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    // frame cap is not an endpoint — cap_type check must reject it
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvCap(tid, &frame_buf, frame_cap, 0, 0);
+    try testing.expectEqual(E_BADCAP, result);
+}
+
+test "sysIpcRecvBlock rejects non-endpoint cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvBlock(tid, &frame_buf, frame_cap, 0, 0);
+    try testing.expectEqual(E_BADCAP, result);
+}
+
+test "sysIpcRecvCapBlock rejects non-endpoint cap" {
+    const tid = testSetup();
+    defer testTeardown();
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvCapBlock(tid, &frame_buf, frame_cap, 0, 0);
+    try testing.expectEqual(E_BADCAP, result);
+}
+
+test "sysIpcRecvCap returns E_AGAIN on closed empty endpoint" {
+    const tid = testSetup();
+    defer testTeardown();
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid));
+    // Close the endpoint externally
+    sched.getEndpoint(tid).?.close();
+    // Non-blocking recv does not distinguish closed from open on empty queue — always E_AGAIN
+    var frame_buf: [34]u64 = undefined;
+    const result = sysIpcRecvCap(tid, &frame_buf, ep_cap, 0, 0);
+    try testing.expectEqual(E_AGAIN, result);
+}
+
+test "sysExit with no supervisor kills thread cleanly" {
+    const tid = testSetup();
+    defer testTeardown();
+    // testSetup gives supervisor_ep = 0xFFFFFFFF (no supervisor) by default
+    try testing.expectEqual(@as(u32, 0xFFFFFFFF), sched.global.threads[tid].supervisor_ep);
+    // Exit must succeed without crashing despite missing supervisor
+    try testing.expectEqual(E_OK, sysExit(tid));
+    try testing.expectEqual(sched.ThreadState.dead, sched.global.threads[tid].state);
+}
+
 fn putDec(val: u32) void {
     if (val == 0) {
         uart.putc('0');
