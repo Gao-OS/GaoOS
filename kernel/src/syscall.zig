@@ -251,6 +251,7 @@ fn sysYield() u64 {
 fn sysCapRead(thread_id: sched.ThreadId, cap_idx: cap.CapIndex) u64 {
     const table = sched.getCapTable(thread_id) orelse return E_BADCAP;
     const c = table.lookup(cap_idx) orelse return E_BADCAP;
+    if (!c.rights.read) return E_BADCAP;
     return @intFromEnum(c.cap_type);
 }
 
@@ -2620,6 +2621,44 @@ test "sysIpcSend with null ptr and non-zero length returns E_BADARG" {
     // ptr=0 with len=10 — should be rejected by user range validation
     const result = sysIpcSend(tid, ep_cap, 0, 10, 0);
     try testing.expectEqual(E_BADARG, result);
+}
+
+test "sysCapRead rejects write-only capability" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    // Create a frame cap with ALL rights, then derive write-only
+    const frame_cap: cap.CapIndex = @intCast(sysFrameAlloc(tid));
+    const wo_cap: cap.CapIndex = @intCast(sysCapDerive(tid, frame_cap, @as(u8, @bitCast(cap.Rights{ .write = true }))));
+
+    // Read should succeed on original (has read right)
+    try testing.expect(sysCapRead(tid, frame_cap) != E_BADCAP);
+
+    // Read should fail on write-only derived cap
+    try testing.expectEqual(E_BADCAP, sysCapRead(tid, wo_cap));
+}
+
+test "sysIpcSendCap sending endpoint cap through itself" {
+    const tid = testSetup();
+    defer testTeardown();
+
+    const ep_cap: cap.CapIndex = @intCast(sysEpCreate(tid)); // ALL rights
+
+    // Send the endpoint cap through the endpoint it references.
+    // This is self-referential: the cap being transferred points to the
+    // same endpoint the message is sent to.
+    const result = sysIpcSendCap(tid, ep_cap, 0, 0, ep_cap);
+    // The send resolves the endpoint before transfer, so it should succeed.
+    // The cap is moved (deleted from sender) but the message is already queued.
+    try testing.expectEqual(E_OK, result);
+
+    // The sender no longer has the endpoint cap (it was moved)
+    const table = sched.getCapTable(tid).?;
+    try testing.expect(table.lookup(ep_cap) == null);
+
+    // But the message is in the queue with the transferred cap
+    const ep = sched.getEndpoint(tid).?;
+    try testing.expectEqual(@as(u32, 1), ep.count);
 }
 
 fn putDec(val: u32) void {
