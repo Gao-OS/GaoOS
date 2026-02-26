@@ -322,3 +322,38 @@ test "multiple fault notifications accumulate at supervisor endpoint" {
     sched.global.kill(child2);
     sched.global.reap(child2);
 }
+
+test "notify on thread with self-supervision drops silently" {
+    // A thread that sets itself as its own supervisor should not crash
+    // when it dies. The endpoint is closed by kill(), so notify finds
+    // the endpoint closed and silently drops the notification.
+    const id = try sched.global.spawn();
+    _ = sched.global.schedule(); // make running
+    sched.global.threads[id].supervisor_ep = id; // self-supervise
+
+    // Close the endpoint (simulates what kill() does)
+    sched.getEndpoint(id).?.close();
+
+    // notify should not panic — silently drops because endpoint is closed
+    notify(id, .exit, 0, 0);
+
+    sched.global.kill(id);
+    sched.global.reap(id);
+}
+
+test "notify on thread with no supervisor is a no-op" {
+    const id = try sched.global.spawn();
+    _ = sched.global.schedule();
+    // supervisor_ep defaults to 0xFFFFFFFF (none)
+    try testing.expectEqual(@as(u32, 0xFFFFFFFF), sched.global.threads[id].supervisor_ep);
+
+    // Should not panic or crash — just returns immediately
+    notify(id, .killed, 0xBEEF, 0xCAFE);
+
+    // Verify no messages were sent to any endpoint
+    const ep = sched.getEndpoint(id).?;
+    try testing.expectEqual(@as(u32, 0), ep.count);
+
+    sched.global.kill(id);
+    sched.global.reap(id);
+}

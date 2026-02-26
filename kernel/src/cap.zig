@@ -443,6 +443,40 @@ test "check on CAP_NULL returns false" {
     try testing.expect(!table.check(CAP_NULL, Rights.NONE));
 }
 
+test "generation counter increments on create and delete" {
+    var table = CapabilityTable{};
+
+    // Create at slot 0 — generation goes from 0 → 1
+    const idx = try table.create(.frame, 0x1000, Rights.ALL);
+    try testing.expectEqual(@as(u32, 0), idx);
+    try testing.expectEqual(@as(u32, 1), table.slots[0].generation);
+
+    // Delete — generation goes from 1 → 2
+    table.delete(idx);
+    try testing.expectEqual(@as(u32, 2), table.slots[0].generation);
+
+    // Re-create at same slot — generation goes from 2 → 3
+    const idx2 = try table.create(.frame, 0x2000, Rights.ALL);
+    try testing.expectEqual(@as(u32, 0), idx2); // same slot
+    try testing.expectEqual(@as(u32, 3), table.slots[0].generation);
+
+    // Cap stored in lookup has matching generation
+    const c = table.lookup(idx2).?;
+    try testing.expectEqual(@as(u32, 3), c.generation);
+}
+
+test "derive with identical rights (no attenuation) succeeds" {
+    var table = CapabilityTable{};
+    const parent = try table.create(.frame, 0x5000, Rights.ALL);
+    const child = try table.derive(parent, Rights.ALL);
+    const c = table.lookup(child).?;
+    try testing.expect(c.rights.read);
+    try testing.expect(c.rights.write);
+    try testing.expect(c.rights.grant);
+    try testing.expect(c.rights.revoke);
+    try testing.expectEqual(@as(usize, 0x5000), c.object);
+}
+
 test "check enforces grant and revoke rights individually" {
     var table = CapabilityTable{};
     // Grant-only cap
