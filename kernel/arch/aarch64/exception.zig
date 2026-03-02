@@ -12,6 +12,10 @@ const syscall = @import("syscall");
 const sched = @import("sched");
 const fault_mod = @import("fault");
 
+// BCM2836 QA7 (ARM local peripherals) registers
+const QA7_BASE = 0x40000000;
+const CORE0_IRQ_SOURCE = QA7_BASE + 0x60; // Core 0 IRQ source register
+
 const ExceptionSource = enum(u8) {
     // Current EL, SP_EL0
     current_el0_sync = 0,
@@ -116,8 +120,7 @@ export fn exception_handler(type_id: u64, frame: [*]u64) callconv(.{ .aarch64_aa
     // Check if it's a timer IRQ and handle without full diagnostic dump
     if (type_id == 5 or type_id == 9) {
         // Read Core 0 interrupt source to identify which IRQ
-        // BCM2837 local interrupt controller: 0x40000060 = Core 0 IRQ Source
-        const core0_irq_source: *volatile u32 = @ptrFromInt(0x40000060);
+        const core0_irq_source: *volatile u32 = @ptrFromInt(CORE0_IRQ_SOURCE);
         const source = core0_irq_source.*;
 
         // Bit 3 = virtual timer IRQ (CNTVIRQ)

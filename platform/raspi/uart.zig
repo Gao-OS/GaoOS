@@ -59,12 +59,3 @@ pub fn puts(s: []const u8) void {
         putc(c);
     }
 }
-
-/// Read one byte from UART (blocks until data available).
-pub fn getc() u8 {
-    // Wait until RX FIFO is not empty (bit 4 of FR = RXFE)
-    while (mmio.read(UART0_FR) & (1 << 4) != 0) {
-        asm volatile ("nop");
-    }
-    return @truncate(mmio.read(UART0_DR) & 0xFF);
-}

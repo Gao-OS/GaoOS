@@ -81,17 +81,3 @@ pub fn transfer(tx: []const u8, rx: []u8) void {
     while ((mmio.read(CS) & CS_DONE) == 0) {}
     mmio.write(CS, 0); // Deassert TA, clear DONE
 }
-
-/// Send a single byte over SPI (discard response).
-pub fn sendByte(byte: u8) void {
-    var tx = [_]u8{byte};
-    var rx = [_]u8{0};
-    transfer(&tx, &rx);
-}
-
-/// Send a command byte followed by a data byte (common SPI display pattern).
-pub fn sendCommand(cmd: u8, data: u8) void {
-    var tx = [_]u8{ cmd, data };
-    var rx = [_]u8{ 0, 0 };
-    transfer(&tx, &rx);
-}

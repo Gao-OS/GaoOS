@@ -14,9 +14,16 @@ fn enableIRQ() void {
     asm volatile ("msr daifclr, #2");
 }
 
-/// BCM2837 local interrupt controller: enable virtual timer IRQ for core 0.
+// BCM2836 QA7 (ARM local peripherals) registers
+const QA7_BASE = 0x40000000;
+const CORE0_TIMER_CTL = QA7_BASE + 0x40; // Core 0 timer interrupt control
+
+// L2 page table base (set up in boot.S, 512 entries × 8 bytes)
+const L2_TABLE_BASE = 0x71000;
+
+/// Enable virtual timer IRQ for core 0.
 fn enableTimerIRQ() void {
-    const core0_timer_ctl: *volatile u32 = @ptrFromInt(0x40000040);
+    const core0_timer_ctl: *volatile u32 = @ptrFromInt(CORE0_TIMER_CTL);
     core0_timer_ctl.* = (1 << 3);
 }
 
@@ -49,7 +56,7 @@ comptime {
 /// Patch L2 page table entries to allow EL0 data access (AP[1]=1) for a
 /// range of 2MB blocks, then batch-invalidate the TLB once.
 fn enableEL0AccessForBlocks(start: usize, end: usize) void {
-    const l2_base: [*]volatile u64 = @ptrFromInt(0x71000);
+    const l2_base: [*]volatile u64 = @ptrFromInt(L2_TABLE_BASE);
     for (start..end) |block_index| {
         l2_base[block_index] |= (1 << 6); // AP[1] = 1 → EL0 RW
     }
