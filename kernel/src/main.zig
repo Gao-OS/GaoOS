@@ -58,7 +58,7 @@ comptime {
 fn enableEL0AccessForBlocks(start: usize, end: usize) void {
     const l2_base: [*]volatile u64 = @ptrFromInt(L2_TABLE_BASE);
     for (start..end) |block_index| {
-        l2_base[block_index] |= (1 << 6); // AP[1] = 1 → EL0 RW
+        l2_base[block_index] |= (1 << 6); // AP=10 → EL1 RW, EL0 RW
     }
     // Single TLB invalidation for all modified entries
     asm volatile ("tlbi vmalle1is");

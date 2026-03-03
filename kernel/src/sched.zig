@@ -525,8 +525,10 @@ test "reap is idempotent and count does not underflow" {
 }
 
 test "per-thread cap table and endpoint" {
-    // Use thread ID 63 (last slot) to avoid collision with other tests
     const id: ThreadId = 63;
+    // Reset globals to avoid cross-test contamination
+    resetCapTable(id);
+    resetEndpoint(id);
     const ct = getCapTable(id).?;
     const ep = getEndpoint(id).?;
 
