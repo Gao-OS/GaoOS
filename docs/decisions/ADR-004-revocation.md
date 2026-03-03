@@ -1,6 +1,6 @@
 ## ADR-004: Capability Revocation Strategy
 
-**Status**: Proposed (open question for Phase 3+)
+**Status**: Partially implemented (Phase 3.2)
 
 ### Context
 
@@ -42,21 +42,45 @@ options below based on empirical data from BEAM integration.
 - Con: Memory overhead per delegation, complex lifecycle
 - Fits BEAM: natural hierarchy maps to supervision trees
 
+### Current Implementation (Phase 3.2)
+
+Phase 3.2 implemented capability delegation via IPC (SYS_IPC_SEND_CAP /
+SYS_IPC_RECV_CAP). The chosen revocation mechanism is **generation-based
+slot invalidation** (closest to Option A characteristics):
+
+- Each capability slot carries a generation counter (u32, wrapping)
+- On `delete()`, the slot is marked invalid and the generation increments
+- Stale handles (cached indices) fail lookup because generation mismatches
+- Capability transfer via IPC is a **move** (not copy): the source slot is
+  deleted after send, preventing aliasing across tables
+- Thread death closes endpoints and triggers fault notification to supervisors
+- Supervisors reap dead threads via SYS_THREAD_REAP, which resets the
+  thread's capability table
+
+This approach is sufficient for the multi-runtime demo (M3.3) and avoids
+the complexity of cross-table revocation chains. Full hierarchical
+revocation (Option B or C) is deferred to Phase 4 (BEAM integration)
+where empirical data will guide the choice.
+
 ### Consequences
 
-By deferring, Phase 1-2 development proceeds without the complexity of
-cross-table revocation. The generation counter within a single table is
-sufficient for the single-runtime Phase 1 scenario.
+The generation-based approach has proven sufficient for Phases 1-3:
+- Within-table revocation is O(1) and zero-allocation
+- Move semantics on IPC transfer prevent capability aliasing
+- Supervisor-based reaping provides cleanup for crashed runtimes
+- The capability table interface (create/lookup/delete/derive) remains
+  stable and can accommodate future revocation strategies
 
-The risk is that the chosen revocation strategy may require restructuring
-the capability table. The current interface (create/lookup/delete/derive)
-is designed to be stable regardless of the backing implementation.
+The remaining gap is **hierarchical revocation**: if Process A delegates
+a cap to Process B, and B delegates to C, revoking A's cap does not
+automatically invalidate B's or C's derived copies. This requires
+cross-table tracking (Options B or C) and is deferred to BEAM integration.
 
 ### Alternatives Considered
 
-**Implement full revocation now**: premature — we don't yet know the
-performance characteristics of the BEAM integration, which should drive
-the choice.
+**Implement full cross-table revocation now**: premature — move semantics
+eliminate most aliasing scenarios, and the BEAM integration will reveal
+which patterns actually need hierarchical revocation.
 
 **No revocation**: unacceptable — BEAM supervision requires the ability
 to invalidate a crashed process's delegated capabilities.
