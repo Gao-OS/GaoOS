@@ -53,7 +53,7 @@ comptime {
         @compileError("User program exceeds 2MB block (would corrupt frame pool)");
 }
 
-/// Patch L2 page table entries to allow EL0 data access (AP[1]=1) for a
+/// Patch L2 page table entries to allow EL0 data access (AP=10) for a
 /// range of 2MB blocks, then batch-invalidate the TLB once.
 fn enableEL0AccessForBlocks(start: usize, end: usize) void {
     const l2_base: [*]volatile u64 = @ptrFromInt(L2_TABLE_BASE);
