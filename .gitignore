@@ -23,6 +23,9 @@ qemu.log
 .DS_Store
 Thumbs.db
 
+# Git worktrees
+.trees/
+
 # devenv
 .devenv/
 .direnv/
