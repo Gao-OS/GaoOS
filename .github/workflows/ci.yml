@@ -14,7 +14,7 @@ jobs:
         with:
           version: 0.15.2
       - name: Format check
-        run: zig fmt --check build.zig kernel/src/ kernel/arch/ libos/ user/ platform/
+        run: zig fmt --check build.zig kernel/src/ kernel/arch/ libos/ user/ platform/ tests/
       - name: Unit tests
         run: zig build test
       - name: Cross-compile kernel
