@@ -56,7 +56,7 @@ M3.3  Multi-runtime demo ─ depends on M3.1, M3.2 ────────┘
 
 ## Full Syscall Table
 
-After Phase 3, the kernel exposes 19 syscalls. Convention: `x8`=number, `x0-x5`=args, `x0`=return.
+After Phase 3, the kernel exposes 23 syscalls. Convention: `x8`=number, `x0-x5`=args, `x0`=return.
 
 | # | Name | Args | Returns | Phase |
 |---|------|------|---------|-------|
@@ -79,6 +79,10 @@ After Phase 3, the kernel exposes 19 syscalls. Convention: `x8`=number, `x0-x5`=
 | 16 | `SYS_SUPERVISOR_SET` | `thread_cap_idx, ep_cap_idx` | 0 | 3.1 |
 | 17 | `SYS_IPC_SEND_CAP` | `ep_cap_idx, msg_ptr, msg_len, cap_to_send` | 0 | 3.2 |
 | 18 | `SYS_IPC_RECV_CAP` | `ep_cap_idx, buf_ptr, tag_filter` | msg_len (cap in x1) | 3.2 |
+| 19 | `SYS_THREAD_REAP` | `thread_cap_idx` | 0 | 3.1 |
+| 20 | `SYS_THREAD_KILL` | `thread_cap_idx` | 0 | 3.1 |
+| 21 | `SYS_IPC_RECV_BLOCK` | `ep_cap_idx, buf_ptr, tag_filter` | msg_len | 3.3 |
+| 22 | `SYS_IPC_RECV_CAP_BLOCK` | `ep_cap_idx, buf_ptr, tag_filter` | msg_len (cap in x1) | 3.3 |
 
 **Error codes** (returned in x0, negative = error):
 | Code | Name | Meaning |
