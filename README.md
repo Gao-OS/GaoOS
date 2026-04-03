@@ -104,6 +104,7 @@ All workers done. System shutting down.
 - [ADR-001: Why Zig](docs/decisions/ADR-001-zig.md)
 - [ADR-002: ARM64 First](docs/decisions/ADR-002-arm64-first.md)
 - [ADR-003: BEAM-Native](docs/decisions/ADR-003-beam-native.md)
+- [ADR-004: Capability Revocation](docs/decisions/ADR-004-revocation.md)
 
 ## License
 
